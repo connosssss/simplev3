@@ -1,0 +1,9 @@
+/* ==========================================================================
+   Zen-Style Browser UI Master Stylesheet
+   ========================================================================== */
+
+@import url("chrome://browser/content/chrome/theme/variables.css");
+@import url("chrome://browser/content/chrome/theme/layout.css");
+@import url("chrome://browser/content/chrome/theme/viewport-canvas.css");
+@import url("chrome://browser/content/chrome/theme/vertical-tabs.css");
+@import url("chrome://browser/content/chrome/theme/floating-urlbar.css");

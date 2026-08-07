@@ -1,0 +1,9 @@
+#urlbar-container {
+  max-width: 600px !important;
+  margin: 0 auto !important;
+}
+
+#urlbar {
+  border-radius: 8px !important;
+  background-color: var(--zen-bg-surface) !important;
+}

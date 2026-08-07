@@ -1,0 +1,14 @@
+{
+  "name": "simple-browser-ui",
+  "version": "1.0.0",
+  "description": "Custom UI layer for Simple Browser",
+  "main": "index.js",
+  "scripts": {
+    "sync": "node scripts/sync-ui.js",
+    "build": "node scripts/sync-ui.js build",
+    "build:ui": "node scripts/sync-ui.js build:ui"
+  },
+  "keywords": ["browser", "firefox-theme", "custom-ui"],
+  "author": "",
+  "license": "MPL-2.0"
+}

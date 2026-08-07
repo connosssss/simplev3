@@ -1,0 +1,16 @@
+:root {
+  /* Color Palette */
+  --zen-bg-main: #0f111a;
+  --zen-bg-sidebar: #161925;
+  --zen-bg-surface: #1e2235;
+  --zen-accent: #7c5cff;
+  --zen-accent-hover: #9377ff;
+  --zen-text-primary: #f0f3fe;
+  --zen-text-muted: #8c93b0;
+
+  /* Layout Dimensions */
+  --zen-sidebar-width: 240px;
+  --zen-sidebar-collapsed-width: 52px;
+  --zen-canvas-radius: 12px;
+  --zen-canvas-padding: 8px;
+}
