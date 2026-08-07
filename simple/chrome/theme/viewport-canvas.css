@@ -1,0 +1,12 @@
+#tabbrowser-tabpanels {
+  background-color: var(--zen-bg-main) !important;
+  padding: var(--zen-canvas-padding) !important;
+}
+
+.browserSidebarContainer,
+#tabbrowser-tabpanels browser {
+  border-radius: var(--zen-canvas-radius) !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
+  border: 1px solid rgba(255, 255, 255, 0.05) !important;
+  overflow: hidden !important;
+}

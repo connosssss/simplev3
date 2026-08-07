@@ -1,0 +1,20 @@
+{
+  "name": "simple-browser",
+  "version": "1.0.0",
+  "description": "Simple Browser Root Workspace",
+  "main": "simple/index.js",
+  "scripts": {
+    "start": "node simple/scripts/sync-ui.js start",
+    "run": "node simple/scripts/sync-ui.js run",
+    "sync": "node simple/scripts/sync-ui.js",
+    "build": "node simple/scripts/sync-ui.js build",
+    "build:ui": "node simple/scripts/sync-ui.js build:ui"
+  },
+  "keywords": [
+    "browser",
+    "firefox-theme",
+    "custom-ui"
+  ],
+  "author": "",
+  "license": "MPL-2.0"
+}

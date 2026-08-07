@@ -6,7 +6,9 @@
   "scripts": {
     "sync": "node scripts/sync-ui.js",
     "build": "node scripts/sync-ui.js build",
-    "build:ui": "node scripts/sync-ui.js build:ui"
+    "build:ui": "node scripts/sync-ui.js build:ui",
+    "run": "node scripts/sync-ui.js run",
+    "start": "node scripts/sync-ui.js start"
   },
   "keywords": ["browser", "firefox-theme", "custom-ui"],
   "author": "",
