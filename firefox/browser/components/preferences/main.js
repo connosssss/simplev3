@@ -87,6 +87,8 @@ Preferences.addAll([
   { id: "browser.link.open_newwindow", type: "int" },
   { id: "browser.tabs.loadInBackground", type: "bool", inverted: true },
   { id: "browser.tabs.warnOnClose", type: "bool" },
+  { id: "simple.theme.transparent-toolbar", type: "bool" },
+  { id: "simple.theme.transparent-toolbar.opacity", type: "int" },
   { id: "browser.warnOnQuitShortcut", type: "bool" },
   { id: "browser.tabs.warnOnOpen", type: "bool" },
   { id: "browser.ctrlTab.sortByRecentlyUsed", type: "bool" },
@@ -582,6 +584,30 @@ var gMainPane = {
       (thumbsCheckbox.hidden = !cardPreviewEnabledPref.value);
     cardPreviewEnabledPref.on("change", maybeShowThumbsCheckbox);
     maybeShowThumbsCheckbox();
+
+    const transparentToolbarPref = Preferences.get(
+      "simple.theme.transparent-toolbar"
+    );
+    const transparentToolbarOpacityBox = document.getElementById(
+      "transparentToolbarOpacityBox"
+    );
+    const transparentToolbarOpacitySlider = document.getElementById(
+      "transparentToolbarOpacity"
+    );
+    const transparentToolbarOpacityLabel = document.getElementById(
+      "transparentToolbarOpacityLabel"
+    );
+    const updateTransparentToolbarUI = () => {
+      transparentToolbarOpacityBox.hidden = !transparentToolbarPref.value;
+      transparentToolbarOpacityLabel.textContent =
+        transparentToolbarOpacitySlider.value + "%";
+    };
+    transparentToolbarPref.on("change", updateTransparentToolbarUI);
+    transparentToolbarOpacitySlider.addEventListener(
+      "input",
+      updateTransparentToolbarUI
+    );
+    updateTransparentToolbarUI();
 
     const tabGroupSuggestionsCheckbox = document.getElementById(
       "tabGroupSuggestions"

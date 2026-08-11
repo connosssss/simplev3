@@ -26,6 +26,11 @@
 // Set add-ons abuse report related prefs specific to Firefox Desktop.
 pref("extensions.abuseReport.enabled", true);
 
+pref("simple.theme.transparent-toolbar", false);
+pref("simple.theme.transparent-toolbar.opacity", 55);
+pref("widget.windows.mica", true);
+pref("widget.windows.mica.toplevel-backdrop", 2);
+
 // Enables some extra Extension System Logging (can reduce performance)
 pref("extensions.logging.enabled", false);
 

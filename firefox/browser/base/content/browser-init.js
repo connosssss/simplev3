@@ -463,6 +463,16 @@ var gBrowserInit = {
     ctrlTab.readPref();
     Services.prefs.addObserver(ctrlTab.prefName, ctrlTab);
 
+    const updateToolbarOpacity = () => {
+      const val = Services.prefs.getIntPref("simple.theme.transparent-toolbar.opacity", 55);
+      document.documentElement.style.setProperty("--simple-toolbar-opacity", val + "%");
+      document.documentElement.style.setProperty("--simple-urlbar-opacity", Math.min(100, val + 15) + "%");
+    };
+
+    
+    updateToolbarOpacity();
+    Services.prefs.addObserver("simple.theme.transparent-toolbar.opacity", updateToolbarOpacity);
+
     // The object handling the downloads indicator is initialized here in the
     // delayed startup function, but the actual indicator element is not loaded
     // unless there are downloads to be displayed.

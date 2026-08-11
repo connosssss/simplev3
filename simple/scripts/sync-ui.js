@@ -5,7 +5,7 @@ const { execSync } = require('child_process');
 
 const SOURCE_CHROME = path.join(__dirname, '..', 'chrome');
 const ENGINE_DIR = path.join(__dirname, '..', '..', 'firefox');
-const ENGINE_CHROME = path.join(ENGINE_DIR, 'browser', 'chrome');
+const ENGINE_THEME = path.join(ENGINE_DIR, 'browser', 'themes', 'shared');
 
 function copyRecursiveSync(src, dest) {
   if (!fs.existsSync(src)) return;
@@ -26,16 +26,12 @@ function copyRecursiveSync(src, dest) {
   }
 }
 
-function applyManifestPatches() {
-}
-
 console.log('syncing custom ui');
-copyRecursiveSync(SOURCE_CHROME, ENGINE_CHROME);
+fs.rmSync(path.join(ENGINE_THEME, 'theme'), { recursive: true, force: true });
+copyRecursiveSync(path.join(SOURCE_CHROME, 'theme'), path.join(ENGINE_THEME, 'theme'));
+copyRecursiveSync(path.join(SOURCE_CHROME, 'userChrome.css'), path.join(ENGINE_THEME, 'userChrome.css'));
 
-console.log('applying build manifest patches');
-applyManifestPatches();
-
-console.log('UI assets & manifests synced successfully');
+console.log('UI assets synced successfully');
 
 const mode = process.argv[2];
 const env = { ...process.env, MOZBUILD_STATE_PATH: process.env.MOZBUILD_STATE_PATH || 'C:\\Users\\conno\\.mozbuild_clean' };

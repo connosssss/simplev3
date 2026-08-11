@@ -10,3 +10,6 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 .vscode/
+
+/firefox/browser/themes/shared/theme/
+/firefox/browser/themes/shared/userChrome.css

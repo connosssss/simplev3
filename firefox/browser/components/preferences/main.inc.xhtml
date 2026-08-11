@@ -136,6 +136,22 @@
     <checkbox id="warnCloseMultiple" data-l10n-id="ask-on-close-multiple-tabs"
               preference="browser.tabs.warnOnClose"/>
 
+
+    <!-- Transparent Toolbar Setting (Part of simple) -->
+    <checkbox id="transparentToolbar"
+              label="Semi-transparent tabbar &amp; address bar"
+              preference="simple.theme.transparent-toolbar"/>
+
+    <hbox id="transparentToolbarOpacityBox" align="center" style="margin-inline-start: 24px; gap: 8px; margin-block: 4px 8px;">
+      <label control="transparentToolbarOpacity">Opacity:</label>
+      <html:input id="transparentToolbarOpacity"
+                  type="range" min="10" max="90" step="5"
+                  preference="simple.theme.transparent-toolbar.opacity"/>
+      <html:span id="transparentToolbarOpacityLabel" style="min-width: 40px; font-weight: 500;">55%</html:span>
+    </hbox>
+
+
+
 #ifndef XP_WIN
     <checkbox id="warnOnQuitKey" preference="browser.warnOnQuitShortcut"/>
 #endif
