@@ -7,5 +7,4 @@ user_pref("svg.context-properties.content.enabled", true);
 // Enable modern CSS features
 user_pref("layout.css.has-selector.enabled", true);
 
-// Optional: Enable floating compact tabs UI flags
 user_pref("browser.tabs.inTitlebar", 1);
