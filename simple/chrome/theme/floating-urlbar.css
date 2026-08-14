@@ -1,9 +1,23 @@
+/* Hide flexible space springs on the toolbar so the urlbar takes full width */
+toolbarspring,
+[id^="customizableui-special-spring"],
+#wrapper-customizableui-special-spring1,
+#wrapper-customizableui-special-spring2 {
+  display: none !important;
+}
+
 #urlbar-container {
-  max-width: 600px !important;
-  margin: 0 auto !important;
+  max-width: none !important;
+  margin: 0 !important;
+  flex: 1 1 auto !important;
+  width: auto !important;
 }
 
 #urlbar {
   border-radius: 8px !important;
-  background-color: var(--zen-bg-surface) !important;
+  background-color: #1e2235 !important;
 }
+
+
+
+

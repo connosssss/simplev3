@@ -8,7 +8,8 @@
     "run": "node simple/scripts/sync-ui.js run",
     "sync": "node simple/scripts/sync-ui.js",
     "build": "node simple/scripts/sync-ui.js build",
-    "build:ui": "node simple/scripts/sync-ui.js build:ui"
+    "build:ui": "node simple/scripts/sync-ui.js build:ui",
+    "build:installer": "iscc installer.iss"
   },
   "keywords": [
     "browser",

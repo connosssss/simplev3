@@ -6,12 +6,13 @@
 :root[simple-ui-vertical-tabs="true"] #tabbrowser-tabs {
   display: flex !important;
   flex-direction: column !important;
-  width: var(--zen-sidebar-width, 240px) !important;
-  background-color: var(--zen-bg-sidebar, transparent) !important;
+  width: 240px !important;
+  background-color: #161925 !important;
   transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
 :root[simple-ui-vertical-tabs="true"] #tabbrowser-tabs[collapsed="true"] {
-  width: var(--zen-sidebar-collapsed-width, 48px) !important;
+  width: 48px !important;
 }
+
 

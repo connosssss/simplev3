@@ -5,15 +5,18 @@
     background-color: transparent !important;
     background-image: none !important;
   }
+
   #navigator-toolbox {
     backdrop-filter: blur(20px) !important;
   }
   #TabsToolbar, #nav-bar {
-    background-color: color-mix(in srgb, var(--zen-bg-surface) var(--simple-toolbar-opacity, 55%), transparent) !important;
+    background-color: color-mix(in srgb, #1e2235 var(--simple-toolbar-opacity, 55%), transparent) !important;
     background-image: none !important;
   }
+  
   #urlbar-background {
-    background-color: color-mix(in srgb, var(--zen-bg-surface) var(--simple-urlbar-opacity, 70%), transparent) !important;
+    background-color: color-mix(in srgb, #1e2235 var(--simple-urlbar-opacity, 70%), transparent) !important;
     backdrop-filter: blur(12px) !important;
   }
 }
+
