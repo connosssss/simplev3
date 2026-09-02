@@ -8,6 +8,256 @@ var delayedStartupPromise = new Promise(resolve => {
   _resolveDelayedStartup = resolve;
 });
 
+var TabStacks = {
+  STACK_KEY: "tab-stack",
+  COLLAPSED_KEY: "tab-stack.collapsed",
+
+  init() {
+    if (this._initialized) {
+      return;
+    }
+    this._initialized = true;
+    this.SessionStore = ChromeUtils.importESModule(
+      "resource:///modules/sessionstore/SessionStore.sys.mjs"
+    ).SessionStore;
+
+    this._onTabOpen = () => this.refresh();
+    this._onTabClose = () => this.refresh();
+    this._onTabSelect = event => {
+      this.expandStack(event.target);
+      this.refresh();
+    };
+    // drag moves preserve stack membership but can separate a stack;
+    // add tree-aware drag handling only if that becomes problem
+    this._onTabMove = () => this.refresh();
+    this._onPopupShowing = event => {
+      if (event.target == this.menu) {
+        this.updateMenu();
+      }
+    };
+    gBrowser.tabContainer.addEventListener("TabOpen", this._onTabOpen);
+    gBrowser.tabContainer.addEventListener("TabClose", this._onTabClose);
+    gBrowser.tabContainer.addEventListener("TabSelect", this._onTabSelect);
+    gBrowser.tabContainer.addEventListener("TabMove", this._onTabMove);
+    this.menu = document.getElementById("tabContextMenu");
+    this.menu.addEventListener("popupshowing", this._onPopupShowing);
+    this.refresh();
+  },
+
+  uninit() {
+    if (!this._initialized) {
+      return;
+    }
+    gBrowser.tabContainer.removeEventListener("TabOpen", this._onTabOpen);
+    gBrowser.tabContainer.removeEventListener("TabClose", this._onTabClose);
+    gBrowser.tabContainer.removeEventListener("TabSelect", this._onTabSelect);
+    gBrowser.tabContainer.removeEventListener("TabMove", this._onTabMove);
+    this.menu.removeEventListener("popupshowing", this._onPopupShowing);
+    this._initialized = false;
+  },
+
+  tabs() {
+    return [...gBrowser.tabs].filter(tab => !tab.closing);
+  },
+
+  stackId(tab) {
+    return this.SessionStore.getCustomTabValue(tab, this.STACK_KEY);
+  },
+
+  setStack(tab, stackId) {
+    
+    if (stackId) {
+      this.SessionStore.setCustomTabValue(tab, this.STACK_KEY, stackId);
+    } 
+    
+    else {
+      this.SessionStore.deleteCustomTabValue(tab, this.STACK_KEY);
+    }
+  },
+
+  stackTabs(tab) {
+    let stackId = this.stackId(tab);
+    return stackId
+      ? this.tabs().filter(candidate => this.stackId(candidate) == stackId)
+      : [];
+  },
+
+  isParent(tab) {
+    let stack = this.stackTabs(tab);
+    return stack.length > 1 && stack[0] == tab;
+  },
+
+  isChild(tab) {
+    let stack = this.stackTabs(tab);
+    return stack.length > 1 && stack[0] != tab;
+  },
+
+  stack(tab, parent) {
+    if (
+      !tab ||
+      !parent ||
+      tab == parent ||
+      tab.pinned ||
+      parent.pinned
+    ) {
+      return;
+    }
+
+    let tabStackId = this.stackId(tab);
+    let parentStackId = this.stackId(parent);
+
+    if (tabStackId && tabStackId == parentStackId) {
+      return;
+    }
+
+    let movingTabs = this.stackTabs(tab);
+
+    if (!movingTabs.length) {
+      movingTabs = [tab];
+    }
+    let targetTabs = this.stackTabs(parent);
+
+    if (!targetTabs.length) {
+      targetTabs = [parent];
+    }
+
+    let stackId = parentStackId || Services.uuid.generateUUID().toString();
+
+
+    for (let stackTab of targetTabs) {
+      this.setStack(stackTab, stackId);
+    }
+
+    for (let movingTab of movingTabs) {
+      this.setStack(movingTab, stackId);
+    }
+
+
+    gBrowser.moveTabsAfter(movingTabs, targetTabs.at(-1));
+    this.refresh();
+  },
+
+  unstack(tab) {
+    if (!this.isChild(tab)) {
+      return;
+    }
+    this.setStack(tab, "");
+    this.SessionStore.deleteCustomTabValue(tab, this.COLLAPSED_KEY);
+    this.refresh();
+  },
+
+  isCollapsed(tab) {
+    return (
+      this.SessionStore.getCustomTabValue(tab, this.COLLAPSED_KEY) == "true"
+    );
+  },
+
+  toggle(tab) {
+    let stack = this.stackTabs(tab);
+
+    if (!this.isParent(tab)) {
+      return;
+    }
+
+
+    let collapsed = !this.isCollapsed(tab);
+
+    if (collapsed && stack.includes(gBrowser.selectedTab) && tab != gBrowser.selectedTab) {
+      gBrowser.selectedTab = tab;
+    }
+
+    for (let stackTab of stack) {
+      if (collapsed) {
+        this.SessionStore.setCustomTabValue(stackTab, this.COLLAPSED_KEY, "true");
+      } 
+      else {
+        this.SessionStore.deleteCustomTabValue(stackTab, this.COLLAPSED_KEY);
+      }
+    }
+    this.refresh();
+  },
+
+  expandStack(tab) {
+    let stack = this.stackTabs(tab);
+    if (stack.length && this.isCollapsed(stack[0])) {
+      for (let stackTab of stack) {
+        this.SessionStore.deleteCustomTabValue(stackTab, this.COLLAPSED_KEY);
+      }
+    }
+  },
+
+  updateMenu() {
+    let tab = TabContextMenu.contextTab;
+    let parent = gBrowser.selectedTab;
+    let tabStackId = tab && this.stackId(tab);
+    let parentStackId = parent && this.stackId(parent);
+
+    let canStack =
+      tab &&
+      parent &&
+      !TabContextMenu.multiselected &&
+      tab != parent &&
+      !tab.pinned &&
+      !parent.pinned &&
+      (!tabStackId || tabStackId != parentStackId);
+
+
+    let stack = document.getElementById("context_StackUnderActive");
+    let unstack = document.getElementById("context_Unstack");
+    let toggle = document.getElementById("context_ToggleStack");
+    let separator = document.getElementById("context_StackSeparator");
+
+    stack.hidden = !canStack;
+    unstack.hidden = !this.isChild(tab) || TabContextMenu.multiselected;
+    toggle.hidden = !this.isParent(tab);
+    toggle.label = this.isCollapsed(tab)
+      ? "Expand Tab Stack"
+      : "Collapse Tab Stack";
+    separator.hidden = stack.hidden && unstack.hidden && toggle.hidden;
+  },
+
+  refresh() {
+    let stacks = new Map();
+
+    for (let tab of this.tabs()) {
+      tab.toggleAttribute("stack-child", false);
+      tab.toggleAttribute("stack-hidden", false);
+      tab.toggleAttribute("stack-parent", false);
+      tab.toggleAttribute("stack-collapsed", false);
+      tab.style.setProperty("--stack-depth", 0);
+
+      let stackId = this.stackId(tab);
+
+      if (stackId) {
+        if (!stacks.has(stackId)) {
+          stacks.set(stackId, []);
+        }
+
+        stacks.get(stackId).push(tab);
+      }
+    }
+
+    for (let stack of stacks.values()) {
+      if (stack.length < 2) {
+        this.setStack(stack[0], "");
+        this.SessionStore.deleteCustomTabValue(stack[0], this.COLLAPSED_KEY);
+        continue;
+      }
+
+      let collapsed = this.isCollapsed(stack[0]);
+      for (let [index, tab] of stack.entries()) {
+        let isParent = index == 0;
+        tab.toggleAttribute("stack-child", !isParent);
+        tab.toggleAttribute("stack-hidden", !isParent && collapsed);
+        tab.toggleAttribute("stack-parent", isParent);
+        tab.toggleAttribute("stack-collapsed", isParent && collapsed);
+        tab.style.setProperty("--stack-depth", isParent ? 0 : 1);
+      }
+
+    }
+  },
+};
+
 var gBrowserInit = {
   delayedStartupFinished: false,
   domContentLoaded: false,
@@ -644,6 +894,8 @@ var gBrowserInit = {
       document.documentElement.setAttribute("sessionrestored", "true");
     });
 
+    TabStacks.init();
+
     this.delayedStartupFinished = true;
     _resolveDelayedStartup();
     Services.obs.notifyObservers(window, "browser-delayed-startup-finished");
@@ -1127,6 +1379,8 @@ var gBrowserInit = {
       WebAuthnPromptHelper.uninit();
       PanelUI.uninit();
     }
+
+    TabStacks.uninit();
 
     // Final window teardown, do this last.
     gBrowser.destroy();

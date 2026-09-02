@@ -23,7 +23,7 @@
   skin/classic/browser/theme/layout.css                        (../shared/theme/layout.css)
   skin/classic/browser/theme/floating-urlbar.css              (../shared/theme/floating-urlbar.css)
   skin/classic/browser/theme/viewport-canvas.css               (../shared/theme/viewport-canvas.css)
-  skin/classic/browser/theme/vertical-tabs.css                 (../shared/theme/vertical-tabs.css)
+  skin/classic/browser/theme/tabbar.css                        (../shared/theme/tabbar.css)
   skin/classic/browser/theme/transparent-toolbar.css           (../shared/theme/transparent-toolbar.css)
   skin/classic/browser/formautofill-notification.css           (../shared/formautofill-notification.css)
   skin/classic/browser/identity-credential-notification.css    (../shared/identity-credential-notification.css)

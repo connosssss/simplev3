@@ -1,0 +1,28 @@
+.tabbrowser-tab {
+  --stack-color: #8b5cf6;
+}
+
+#tabbrowser-tabs .tabbrowser-tab[stack-hidden] {
+  display: none !important;
+}
+
+.tabbrowser-tab[stack-parent] > .tab-stack > .tab-background {
+  box-shadow: inset 3px 0 var(--stack-color);
+}
+
+.tabbrowser-tab[stack-parent][stack-collapsed] .tab-label::after {
+  content: "->";
+}
+
+.tabbrowser-tab[stack-child] > .tab-stack > .tab-content {
+  border-inline-start: 2px solid var(--stack-color);
+}
+
+.tabbrowser-tab[stack-child] > .tab-stack > .tab-background {
+  background-color: color-mix(in srgb, var(--stack-color) 16%, transparent) !important;
+}
+
+#tabbrowser-tabs[orient="vertical"] .tabbrowser-tab[stack-child] > .tab-stack {
+  margin-inline-start: calc(var(--stack-depth) * 12px);
+}
+

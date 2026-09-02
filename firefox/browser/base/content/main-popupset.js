@@ -62,6 +62,15 @@ document.addEventListener(
         case "context_unpinSelectedTabs":
           gBrowser.unpinMultiSelectedTabs();
           break;
+        case "context_StackUnderActive":
+          TabStacks.stack(TabContextMenu.contextTab, gBrowser.selectedTab);
+          break;
+        case "context_Unstack":
+          TabStacks.unstack(TabContextMenu.contextTab);
+          break;
+        case "context_ToggleStack":
+          TabStacks.toggle(TabContextMenu.contextTab);
+          break;
         case "context_duplicateTab":
           duplicateTabIn(TabContextMenu.contextTab, "tab");
           break;
