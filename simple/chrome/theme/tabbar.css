@@ -2,7 +2,38 @@
   --stack-color: #8b5cf6;
 }
 
-#tabbrowser-tabs .tabbrowser-tab[stack-hidden] {
+#tab-stack-bars {
+  min-height: var(--tabstrip-min-height);
+  padding: 0 var(--tab-overflow-clip-margin);
+}
+
+#tab-stack-bars[hidden],
+#navigator-toolbox[tabs-hidden] #tab-stack-bars {
+  display: none;
+}
+
+#tab-stack-bars-container,
+.tab-stack-bar-row {
+  display: flex;
+  min-width: 0;
+}
+
+.tab-stack-bar-row {
+  flex: 1;
+  min-height: var(--tabstrip-min-height);
+}
+
+.tab-stack-tab {
+  flex: 100 100;
+  min-width: var(--tab-min-width-pref, var(--tab-min-width));
+  max-width: 225px;
+}
+
+#tab-stack-bars .tab-stack-tab > .tab-stack {
+  min-height: var(--tabstrip-min-height);
+}
+
+#tabbrowser-tabs[orient="horizontal"] .tabbrowser-tab[stack-child] {
   display: none !important;
 }
 
@@ -10,8 +41,10 @@
   box-shadow: inset 3px 0 var(--stack-color);
 }
 
-.tabbrowser-tab[stack-parent][stack-collapsed] .tab-label::after {
-  content: "->";
+.tabbrowser-tab[stack-parent] .tab-label::after {
+  content: " " attr(data-stack-tab-count);
+  margin-inline-start: 4px;
+  opacity: 0.7;
 }
 
 .tabbrowser-tab[stack-child] > .tab-stack > .tab-content {
@@ -25,4 +58,3 @@
 #tabbrowser-tabs[orient="vertical"] .tabbrowser-tab[stack-child] > .tab-stack {
   margin-inline-start: calc(var(--stack-depth) * 12px);
 }
-

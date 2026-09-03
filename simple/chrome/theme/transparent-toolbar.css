@@ -9,7 +9,7 @@
   #navigator-toolbox {
     backdrop-filter: blur(20px) !important;
   }
-  #TabsToolbar, #nav-bar {
+  #TabsToolbar, #tab-stack-bars, #nav-bar {
     background-color: color-mix(in srgb, #1e2235 var(--simple-toolbar-opacity, 55%), transparent) !important;
     background-image: none !important;
   }
@@ -19,4 +19,3 @@
     backdrop-filter: blur(12px) !important;
   }
 }
-

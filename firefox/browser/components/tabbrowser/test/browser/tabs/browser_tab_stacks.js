@@ -50,3 +50,66 @@ add_task(async function test_tab_stacks() {
   BrowserTestUtils.removeTab(grandchild);
   BrowserTestUtils.removeTab(child);
 });
+
+add_task(async function test_active_stack_gets_a_stack_bar() {
+  let parent = BrowserTestUtils.addTab(gBrowser, "about:blank", {
+    skipAnimation: true,
+  });
+  let child = BrowserTestUtils.addTab(gBrowser, "about:config", {
+    skipAnimation: true,
+  });
+  TabStacks.stack(child, parent);
+  gBrowser.selectedTab = parent;
+
+  let bar = document.getElementById("tab-stack-bars");
+  let container = document.getElementById("tab-stack-bars-container");
+  await TestUtils.waitForCondition(
+    () =>
+      !bar.hidden && container.querySelectorAll(".tab-stack-tab").length == 2,
+    "The active stack's tabs are shown in a stack bar"
+  );
+  Assert.equal(
+    container.querySelector(".tab-stack-tab > .tab-stack").tagName,
+    "stack",
+    "The stack bar uses the regular tab visual structure"
+  );
+  Assert.equal(
+    getComputedStyle(child).display,
+    "none",
+    "Stack children are not shown in the outer tab bar"
+  );
+  Assert.deepEqual(
+    Array.from(
+      container.querySelectorAll(".tab-stack-tab"),
+      button => button.getAttribute("label")
+    ),
+    [parent.label, child.label],
+    "The stack bar preserves the stack's tab order"
+  );
+
+  let selectChild = BrowserTestUtils.waitForEvent(
+    gBrowser.tabContainer,
+    "TabSelect"
+  );
+  EventUtils.synthesizeMouseAtCenter(
+    container.querySelectorAll(".tab-stack-tab")[1],
+    {},
+    window
+  );
+  await selectChild;
+  Assert.equal(
+    gBrowser.selectedTab,
+    child,
+    "A stack-bar tab selects its real tab"
+  );
+
+  TabStacks.toggle(parent);
+  await TestUtils.waitForCondition(
+    () => bar.hidden,
+    "Collapsing the stack hides its stack bar"
+  );
+
+  TabStacks.toggle(parent);
+  BrowserTestUtils.removeTab(child);
+  BrowserTestUtils.removeTab(parent);
+});
