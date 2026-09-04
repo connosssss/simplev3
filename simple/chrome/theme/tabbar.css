@@ -58,3 +58,22 @@
 #tabbrowser-tabs[orient="vertical"] .tabbrowser-tab[stack-child] > .tab-stack {
   margin-inline-start: calc(var(--stack-depth) * 12px);
 }
+
+/* stack bar drag and drop */
+.tab-stack-tab {
+  cursor: grab;
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.tab-stack-tab[stack-dragging] {
+  opacity: 0.4;
+  cursor: grabbing;
+}
+
+.tab-stack-tab[stack-drop-before] {
+  box-shadow: inset 3px 0 0 var(--stack-color, #8b5cf6);
+}
+
+.tab-stack-tab[stack-drop-after] {
+  box-shadow: inset -3px 0 0 var(--stack-color, #8b5cf6);
+}

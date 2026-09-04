@@ -21,7 +21,34 @@ var TabStacks = {
       "resource:///modules/sessionstore/SessionStore.sys.mjs"
     ).SessionStore;
 
-    this._onTabOpen = () => this.refresh();
+    this._onTabOpen = event => {
+      let newTab = event.target;
+      let selectedTab = gBrowser.selectedTab;
+      let activeStackId = this.stackId(selectedTab);
+
+      // auto add new tabs to the active stack when the second tab bar is showing
+      if (
+        activeStackId &&
+        !this.stackId(newTab) &&
+        !newTab.pinned &&
+        newTab !== selectedTab &&
+        gBrowser.tabContainer.getAttribute("orient") == "horizontal"
+      ) {
+        this.setStack(newTab, activeStackId);
+        // position after the selected tab within the stack, or at the end depending on the new tab open 
+        let stackSiblings = this.stackTabs(selectedTab);
+        let selectedIndex = stackSiblings.indexOf(selectedTab);
+        if (selectedIndex >= 0 && selectedIndex < stackSiblings.length - 1) {
+          gBrowser.moveTabAfter(newTab, selectedTab);
+        } else {
+          let lastInStack = stackSiblings.at(-1);
+          if (lastInStack && lastInStack !== newTab) {
+            gBrowser.moveTabAfter(newTab, lastInStack);
+          }
+        }
+      }
+      this.refresh();
+    };
     this._onTabClose = () => this.refresh();
     this._onTabSelect = event => {
       this.expandStack(event.target);
@@ -195,6 +222,29 @@ var TabStacks = {
     }
   },
 
+  /**
+   * Move a tab within its stack to a new position relative to a target tab.
+   * @param {MozTabbrowserTab} tab - The tab to move.
+   * @param {MozTabbrowserTab} targetTab - The tab to position relative to.
+   * @param {boolean} before - If true, place before targetTab; otherwise after.
+   */
+  moveInStack(tab, targetTab, before = false) {
+    if (!tab || !targetTab || tab === targetTab) {
+      return;
+    }
+    let tabStackId = this.stackId(tab);
+    let targetStackId = this.stackId(targetTab);
+    if (!tabStackId || tabStackId !== targetStackId) {
+      return;
+    }
+    if (before) {
+      gBrowser.moveTabBefore(tab, targetTab);
+    } else {
+      gBrowser.moveTabAfter(tab, targetTab);
+    }
+    this.refresh();
+  },
+
   updateMenu() {
     let tab = TabContextMenu.contextTab;
     let parent = gBrowser.selectedTab;
@@ -240,6 +290,7 @@ var TabStacks = {
       tab.hasAttribute("visuallyselected")
     );
     button.tab = tab;
+    button.setAttribute("draggable", "true");
 
     button.append(tab.querySelector(".tab-stack").cloneNode(true));
     button.addEventListener("mousedown", event => event.stopPropagation());
@@ -263,6 +314,80 @@ var TabStacks = {
         gBrowser.selectedTab = tab;
       }
     });
+
+    // reordering within the stack bar
+    button.addEventListener("dragstart", event => {
+      event.stopPropagation();
+      this._draggedStackTab = tab;
+      this._draggedButton = button;
+      button.toggleAttribute("stack-dragging", true);
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/x-tab-stack-drag", "true");
+    });
+
+    button.addEventListener("dragover", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!this._draggedStackTab || this._draggedStackTab === tab) {
+        return;
+      }
+      event.dataTransfer.dropEffect = "move";
+
+      let rect = button.getBoundingClientRect();
+      let midX = rect.left + rect.width / 2;
+      let dropBefore = event.clientX < midX;
+
+      let row = button.closest(".tab-stack-bar-row");
+      if (row) {
+        for (let child of row.children) {
+          child.removeAttribute("stack-drop-before");
+          child.removeAttribute("stack-drop-after");
+        }
+      }
+
+      button.toggleAttribute("stack-drop-before", dropBefore);
+      button.toggleAttribute("stack-drop-after", !dropBefore);
+    });
+
+    button.addEventListener("dragleave", event => {
+      event.stopPropagation();
+      button.removeAttribute("stack-drop-before");
+      button.removeAttribute("stack-drop-after");
+    });
+
+    button.addEventListener("drop", event => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (!this._draggedStackTab || this._draggedStackTab === tab) {
+        return;
+      }
+
+      let rect = button.getBoundingClientRect();
+      let midX = rect.left + rect.width / 2;
+      let dropBefore = event.clientX < midX;
+
+      this.moveInStack(this._draggedStackTab, tab, dropBefore);
+      this._draggedStackTab = null;
+      this._draggedButton = null;
+    });
+
+    button.addEventListener("dragend", event => {
+      event.stopPropagation();
+      button.removeAttribute("stack-dragging");
+      // clear remaining indicators if any
+      let row = button.closest(".tab-stack-bar-row");
+      if (row) {
+        for (let child of row.children) {
+          child.removeAttribute("stack-drop-before");
+          child.removeAttribute("stack-drop-after");
+          child.removeAttribute("stack-dragging");
+        }
+      }
+      this._draggedStackTab = null;
+      this._draggedButton = null;
+    });
+
     return button;
   },
 
