@@ -13,8 +13,11 @@ imply_option("MOZ_NORMANDY", True)
 imply_option("MOZ_PROFILE_MIGRATOR", True)
 
 
-imply_option("MOZ_APP_VENDOR", "Mozilla")
-imply_option("MOZ_APP_ID", "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}")
+imply_option("MOZ_APP_BASENAME", "simple")
+imply_option("MOZ_APP_VENDOR", "simple")
+imply_option("MOZ_APP_ID", "{5a5e15ae-ed2f-41d9-9778-776bb1ce8820}")
+imply_option("MOZ_APP_PROFILE", "simple")
+imply_option("MOZ_APP_REMOTINGNAME", "simple")
 # Include the DevTools client, not just the server (which is the default)
 imply_option("MOZ_DEVTOOLS", "all")
 imply_option("BROWSER_CHROME_URL", "chrome://browser/content/browser.xhtml")

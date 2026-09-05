@@ -1,6 +1,6 @@
 ; Documentation: https://jrsoftware.org/ishelp/
 
-#define MyAppName "simplev3"
+#define MyAppName "simple"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "me"
 #define MyAppURL "https://github.com/simple-browser"
