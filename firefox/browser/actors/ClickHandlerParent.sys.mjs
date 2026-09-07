@@ -105,6 +105,20 @@ export class ClickHandlerParent extends JSWindowActorParent {
       return;
     }
 
+    let sourceTab = window.gBrowser.getTabForBrowser(browser);
+    let isSourceTabInStack = Boolean(
+      sourceTab && window.TabStacks?.stackId(sourceTab)
+    );
+
+    if (isSourceTabInStack && (where == "tab" || where == "tabshifted")) {
+      // tabopen is fired by firefox after normally opening a tab 
+      window.gBrowser.tabContainer.addEventListener(
+        "TabOpen",
+        event => window.TabStacks.addToSourceStack(event.target, sourceTab),
+        { once: true }
+      );
+    }
+
     // Todo(903022): code for where == save
 
     let params = {

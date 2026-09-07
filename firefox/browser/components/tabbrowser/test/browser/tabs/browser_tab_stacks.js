@@ -113,3 +113,68 @@ add_task(async function test_active_stack_gets_a_stack_bar() {
   BrowserTestUtils.removeTab(child);
   BrowserTestUtils.removeTab(parent);
 });
+
+add_task(async function test_only_related_tabs_join_active_stack() {
+  let pageURL = getRootDirectory(gTestPath).replace(
+    "chrome://mochitests/content",
+    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+    "http://example.com"
+  );
+  pageURL += "file_new_tab_page.html";
+
+  let parent = await BrowserTestUtils.openNewForegroundTab(gBrowser, pageURL);
+  let child = BrowserTestUtils.addTab(gBrowser, "about:config");
+  TabStacks.stack(child, parent);
+  let originalOrientation = gBrowser.tabContainer.getAttribute("orient");
+
+  try {
+    gBrowser.tabContainer.setAttribute("orient", "horizontal");
+    gBrowser.selectedTab = parent;
+
+    let newTabPromise = BrowserTestUtils
+      .waitForEvent(gBrowser.tabContainer, "TabOpen")
+      .then(event => event.target);
+    BrowserCommands.openTab();
+    let newTab = await newTabPromise;
+    is(newTab.openerTab, null, "The new-tab button has no source tab");
+    ok(!TabStacks.stackId(newTab), "The new-tab button opens outside a stack");
+    BrowserTestUtils.removeTab(newTab);
+
+    for (let click of [{ ctrlKey: true }, { button: 1 }]) {
+      gBrowser.selectedTab = parent;
+      let relatedTabPromise = BrowserTestUtils.waitForNewTab(
+        gBrowser,
+        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+        "http://example.com/#linkclick",
+        true
+      );
+      await BrowserTestUtils.synthesizeMouseAtCenter(
+        "#link_to_example_com",
+        click,
+        parent.linkedBrowser
+      );
+      let relatedTab = await relatedTabPromise;
+      is(relatedTab.openerTab, parent, "The link keeps its source tab");
+      is(
+        TabStacks.stackId(relatedTab),
+        TabStacks.stackId(parent),
+        "A Ctrl-clicked or middle-clicked link joins the horizontal stack"
+      );
+      is(
+        TabStacks.stackTabs(parent).at(-1),
+        relatedTab,
+        "A Ctrl-clicked or middle-clicked link is the rightmost stack tab"
+      );
+      BrowserTestUtils.removeTab(relatedTab);
+    }
+  } finally {
+    if (originalOrientation) {
+      gBrowser.tabContainer.setAttribute("orient", originalOrientation);
+    } else {
+      gBrowser.tabContainer.removeAttribute("orient");
+    }
+  }
+
+  BrowserTestUtils.removeTab(child);
+  BrowserTestUtils.removeTab(parent);
+});

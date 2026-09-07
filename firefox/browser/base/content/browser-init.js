@@ -22,31 +22,6 @@ var TabStacks = {
     ).SessionStore;
 
     this._onTabOpen = event => {
-      let newTab = event.target;
-      let selectedTab = gBrowser.selectedTab;
-      let activeStackId = this.stackId(selectedTab);
-
-      // auto add new tabs to the active stack when the second tab bar is showing
-      if (
-        activeStackId &&
-        !this.stackId(newTab) &&
-        !newTab.pinned &&
-        newTab !== selectedTab &&
-        gBrowser.tabContainer.getAttribute("orient") == "horizontal"
-      ) {
-        this.setStack(newTab, activeStackId);
-        // position after the selected tab within the stack, or at the end depending on the new tab open 
-        let stackSiblings = this.stackTabs(selectedTab);
-        let selectedIndex = stackSiblings.indexOf(selectedTab);
-        if (selectedIndex >= 0 && selectedIndex < stackSiblings.length - 1) {
-          gBrowser.moveTabAfter(newTab, selectedTab);
-        } else {
-          let lastInStack = stackSiblings.at(-1);
-          if (lastInStack && lastInStack !== newTab) {
-            gBrowser.moveTabAfter(newTab, lastInStack);
-          }
-        }
-      }
       this.refresh();
     };
     this._onTabClose = () => this.refresh();
@@ -109,6 +84,18 @@ var TabStacks = {
     else {
       this.SessionStore.deleteCustomTabValue(tab, this.STACK_KEY);
     }
+  },
+
+  addToSourceStack(tab, sourceTab) {
+    let sourceStackId = this.stackId(sourceTab);
+    if (!sourceStackId || this.stackId(tab) || tab.pinned || tab == sourceTab) {
+      return;
+    }
+
+    let lastInStack = this.stackTabs(sourceTab).at(-1);
+    this.setStack(tab, sourceStackId);
+    gBrowser.moveTabAfter(tab, lastInStack);
+    this.refresh();
   },
 
   stackTabs(tab) {
