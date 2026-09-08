@@ -26,10 +26,18 @@ var TabStacks = {
     };
     this._onTabClose = () => this.refresh();
     this._onTabSelect = event => {
+      if (this._isDraggingTab || this._mouseDownOnTab) {
+        return;
+      }
       this.expandStack(event.target);
       this.refresh();
     };
-    this._onTabAttrModified = () => this.renderStackBars();
+    this._onTabAttrModified = () => {
+      if (this._isDraggingTab || this._mouseDownOnTab) {
+        return;
+      }
+      this.renderStackBars();
+    };
     // drag moves preserve stack membership but can separate a stack;
     // add tree-aware drag handling only if that becomes problem
     this._onTabMove = () => this.refresh();
@@ -37,6 +45,138 @@ var TabStacks = {
       if (event.target == this.menu) {
         this.updateMenu();
       }
+    };
+
+    this._onTabMouseDown = event => {
+
+      if (event.button !== 0) {
+        return;
+      }
+
+      let tab = event.target.closest("tab, .tabbrowser-tab");
+      if (tab) {
+        this._mouseDownOnTab = true;
+      }
+    };
+
+    this._onTabMouseUp = () => {
+      if (this._mouseDownOnTab) {
+        this._mouseDownOnTab = false;
+        this.expandStack(gBrowser.selectedTab);
+        this.refresh();
+      }
+    };
+
+    this._onDragStart = event => {
+      this._mouseDownOnTab = false;
+      let target = event.target;
+      let tab = target?.closest?.("tab, .tabbrowser-tab");
+      let stackTab = target?.closest?.(".tab-stack-tab");
+
+      if (this._draggedStackTab || tab || stackTab) {
+        this._isDraggingTab = true;
+      }
+
+      if (tab && !stackTab) {
+        this._draggedExternalTab = tab;
+      }
+    };
+
+    this._onDragEnd = () => {
+      this._isDraggingTab = false;
+      this._mouseDownOnTab = false;
+      this._draggedStackTab = null;
+      this._draggedExternalTab = null;
+      this._draggedButton = null;
+      this._clearTabStripDropIndicator();
+
+      let row = document.querySelector(".tab-stack-bar-row");
+      if (row) {
+        for (let child of row.children) {
+          child.removeAttribute("stack-drop-before");
+          child.removeAttribute("stack-drop-after");
+          child.removeAttribute("stack-dragging");
+        }
+      }
+
+      this.refresh();
+    };
+
+    this._onTabStripDragOver = event => {
+      if (!this.isTabDrag(event)) {
+        return;
+      }
+
+      let draggedTab = this.getDraggedTab(event);
+      if (draggedTab) {
+        if (!this._draggedStackTab && !this.stackId(draggedTab)) {
+          return;
+        }
+      } 
+      else if (!this._draggedStackTab) {
+        return;
+      }
+
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "move";
+      this._updateTabStripDropIndicator(event);
+    };
+
+    this._onTabStripDragLeave = event => {
+      if (event.relatedTarget && !gBrowser.tabContainer.contains(event.relatedTarget)) {
+        this._clearTabStripDropIndicator();
+      }
+    };
+
+    this._onTabStripDrop = event => {
+      if (!this.isTabDrag(event)) {
+        return;
+      }
+
+      let draggedTab = this.getDraggedTab(event);
+      if (!draggedTab || (!this._draggedStackTab && !this.stackId(draggedTab))) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      this._clearTabStripDropIndicator();
+
+      let targetTab = event.target.closest("tab, .tabbrowser-tab");
+      if (!targetTab) {
+        targetTab = gBrowser.visibleTabs.at(-1);
+      }
+
+      let isVertical = gBrowser.tabContainer.getAttribute("orient") == "vertical";
+      let dropBefore = false;
+
+      if (targetTab && targetTab !== draggedTab) {
+        let tabRect = targetTab.getBoundingClientRect();
+        dropBefore = isVertical
+          ? event.clientY < tabRect.top + tabRect.height / 2
+          : event.clientX < tabRect.left + tabRect.width / 2;
+      }
+
+      this.setStack(draggedTab, "");
+      this.SessionStore.deleteCustomTabValue(draggedTab, this.COLLAPSED_KEY);
+
+      if (targetTab && targetTab !== draggedTab) {
+        if (dropBefore) {
+          gBrowser.moveTabBefore(draggedTab, targetTab);
+        } 
+        else {
+          gBrowser.moveTabAfter(draggedTab, targetTab);
+        }
+      }
+
+      this._draggedStackTab = null;
+      this._draggedExternalTab = null;
+      this._draggedButton = null;
+      this._isDraggingTab = false;
+      this._mouseDownOnTab = false;
+      this.refresh();
     };
     gBrowser.tabContainer.addEventListener("TabOpen", this._onTabOpen);
     gBrowser.tabContainer.addEventListener("TabClose", this._onTabClose);
@@ -46,6 +186,29 @@ var TabStacks = {
       "TabAttrModified",
       this._onTabAttrModified
     );
+    gBrowser.tabContainer.addEventListener(
+      "mousedown",
+      this._onTabMouseDown,
+      true
+    );
+    gBrowser.tabContainer.addEventListener(
+      "dragover",
+      this._onTabStripDragOver,
+      true
+    );
+    gBrowser.tabContainer.addEventListener(
+      "dragleave",
+      this._onTabStripDragLeave,
+      true
+    );
+    gBrowser.tabContainer.addEventListener(
+      "drop",
+      this._onTabStripDrop,
+      true
+    );
+    window.addEventListener("mouseup", this._onTabMouseUp, true);
+    window.addEventListener("dragstart", this._onDragStart, true);
+    window.addEventListener("dragend", this._onDragEnd, true);
     this.menu = document.getElementById("tabContextMenu");
     this.menu.addEventListener("popupshowing", this._onPopupShowing);
     this.refresh();
@@ -63,8 +226,187 @@ var TabStacks = {
       "TabAttrModified",
       this._onTabAttrModified
     );
+    gBrowser.tabContainer.removeEventListener(
+      "mousedown",
+      this._onTabMouseDown,
+      true
+    );
+    gBrowser.tabContainer.removeEventListener(
+      "dragover",
+      this._onTabStripDragOver,
+      true
+    );
+    gBrowser.tabContainer.removeEventListener(
+      "dragleave",
+      this._onTabStripDragLeave,
+      true
+    );
+    gBrowser.tabContainer.removeEventListener(
+      "drop",
+      this._onTabStripDrop,
+      true
+    );
+    window.removeEventListener("mouseup", this._onTabMouseUp, true);
+    window.removeEventListener("dragstart", this._onDragStart, true);
+    window.removeEventListener("dragend", this._onDragEnd, true);
     this.menu.removeEventListener("popupshowing", this._onPopupShowing);
     this._initialized = false;
+  },
+
+  _clearTabStripDropIndicator() {
+    let ind = gBrowser.tabContainer._tabDropIndicator;
+    if (ind) {
+      ind.hidden = true;
+    }
+  },
+
+  _updateTabStripDropIndicator(event) {
+    let ind = gBrowser.tabContainer._tabDropIndicator;
+
+    if (!ind) {
+      return;
+    }
+
+    let arrowScrollbox = gBrowser.tabContainer.arrowScrollbox;
+
+    if (!arrowScrollbox) {
+      return;
+    }
+
+    let isVertical = gBrowser.tabContainer.getAttribute("orient") == "vertical";
+    let rect = arrowScrollbox.getBoundingClientRect();
+    let targetTab = event.target.closest("tab, .tabbrowser-tab");
+    let newMargin = 0;
+
+    if (targetTab) {
+      let tabRect = targetTab.getBoundingClientRect();
+
+      if (isVertical) {
+        let dropBefore = event.clientY < tabRect.top + tabRect.height / 2;
+        newMargin = (dropBefore ? tabRect.top : tabRect.bottom) - rect.top;
+      } 
+      else {
+        let dropBefore = event.clientX < tabRect.left + tabRect.width / 2;
+        newMargin = (dropBefore ? tabRect.left : tabRect.right) - rect.left;
+      }
+
+    } 
+    
+    else {
+      let lastTab = gBrowser.visibleTabs.at(-1);
+      if (lastTab) {
+        let lastRect = lastTab.getBoundingClientRect();
+        newMargin = isVertical
+          ? lastRect.bottom - rect.top
+          : lastRect.right - rect.left;
+      }
+    }
+
+    ind.hidden = false;
+    ind.style.transform = isVertical ? "translateY(" + Math.round(newMargin) + "px)" : "translateX(" + Math.round(newMargin) + "px)";
+  },
+
+  activeStackTabs() {
+    let selectedStack = this.stackTabs(gBrowser.selectedTab);
+    if (selectedStack.length >= 2 && !this.isCollapsed(selectedStack[0])) {
+      this._lastActiveStackId = this.stackId(selectedStack[0]);
+      return selectedStack;
+    }
+    // if a regular tab is selected, keeps the stack bar below active so you can still drag it in
+    if (
+      (this._isDraggingTab || this._mouseDownOnTab) &&
+      this._lastActiveStackId
+    ) {
+
+      let lastStack = this.tabs().filter(
+        candidate => this.stackId(candidate) == this._lastActiveStackId
+      );
+
+      if (lastStack.length >= 2 && !this.isCollapsed(lastStack[0])) {
+        return lastStack;
+      }
+    }
+    return [];
+  },
+
+  isTabDrag(event) {
+    if (this._draggedStackTab || this._draggedExternalTab) {
+      return true;
+    }
+
+    let dt = event?.dataTransfer;
+    if (!dt) {
+      return false;
+    }
+
+    const TAB_DROP_TYPE = "application/x-moz-tabbrowser-tab";
+    if (dt.types) {
+
+      if (
+        typeof dt.types.includes === "function" &&
+        dt.types.includes(TAB_DROP_TYPE)
+      ) {
+        return true;
+      }
+
+      if (
+        typeof dt.types.contains === "function" &&
+        dt.types.contains(TAB_DROP_TYPE)
+      ) {
+        return true;
+      }
+
+    }
+
+
+    try {
+      if (dt.mozItemCount > 0) {
+        let types = dt.mozTypesAt(0);
+        if (
+          types &&
+          (types.contains?.(TAB_DROP_TYPE) || types.includes?.(TAB_DROP_TYPE))
+        ) {
+          return true;
+        }
+      }
+    } 
+    catch (e) {}
+    return false;
+  },
+
+  getDraggedTab(event) {
+    if (this._draggedStackTab) {
+      return this._draggedStackTab;
+    }
+
+    if (this._draggedExternalTab) {
+      return this._draggedExternalTab;
+    }
+
+    let dt = event?.dataTransfer;
+    if (!dt) {
+      return null;
+    }
+
+    const TAB_DROP_TYPE = "application/x-moz-tabbrowser-tab";
+    try {
+      let tab = dt.mozGetDataAt(TAB_DROP_TYPE, 0);
+      if (tab) {
+        return tab;
+      }
+    } 
+    catch (e) {}
+
+    try {
+      if (dt.mozItemCount > 0) {
+        let tab = dt.mozGetDataAt(TAB_DROP_TYPE, 0);
+        if (tab) {
+          return tab;
+        }
+      }
+    } 
+    catch (e) {}
+    return null;
   },
 
   tabs() {
@@ -302,23 +644,44 @@ var TabStacks = {
       }
     });
 
-    // reordering within the stack bar
+    // reordering within the stack bar or dragging from regular tab bar
     button.addEventListener("dragstart", event => {
       event.stopPropagation();
       this._draggedStackTab = tab;
       this._draggedButton = button;
+      this._isDraggingTab = true;
       button.toggleAttribute("stack-dragging", true);
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData("text/x-tab-stack-drag", "true");
+      try {
+        event.dataTransfer.mozSetDataAt(
+          "application/x-moz-tabbrowser-tab",
+          tab,
+          0
+        );
+        event.dataTransfer.mozSetDataAt(
+          "text/x-moz-text-internal",
+          tab.linkedBrowser?.currentURI?.spec || "",
+          0
+        );
+      } 
+      catch (e) {}
     });
 
     button.addEventListener("dragover", event => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (!this._draggedStackTab || this._draggedStackTab === tab) {
+      if (!this.isTabDrag(event)) {
         return;
       }
+      let draggedTab = this.getDraggedTab(event);
+      if (draggedTab) {
+        if ( draggedTab === tab || draggedTab.pinned || draggedTab.closing) {
+          return;
+        }
+      }
+      event.preventDefault();
+      event.stopPropagation();
       event.dataTransfer.dropEffect = "move";
+      this._isDraggingTab = true;
 
       let rect = button.getBoundingClientRect();
       let midX = rect.left + rect.width / 2;
@@ -343,20 +706,49 @@ var TabStacks = {
     });
 
     button.addEventListener("drop", event => {
-      event.preventDefault();
-      event.stopPropagation();
-
-      if (!this._draggedStackTab || this._draggedStackTab === tab) {
+      let draggedTab = this.getDraggedTab(event);
+      if ( !draggedTab || draggedTab === tab || draggedTab.pinned || draggedTab.closing ) {
         return;
       }
+      event.preventDefault();
+      event.stopPropagation();
 
       let rect = button.getBoundingClientRect();
       let midX = rect.left + rect.width / 2;
       let dropBefore = event.clientX < midX;
 
-      this.moveInStack(this._draggedStackTab, tab, dropBefore);
+      button.removeAttribute("stack-drop-before");
+      button.removeAttribute("stack-drop-after");
+
+      if (this.stackId(draggedTab) === this.stackId(tab)) {
+        this.moveInStack(draggedTab, tab, dropBefore);
+      } 
+      else {
+        let targetStackId = this.stackId(tab);
+        let movingTabs = this.stackTabs(draggedTab);
+        if (!movingTabs.length) {
+          movingTabs = [draggedTab];
+        }
+
+        for (let movingTab of movingTabs) {
+          this.setStack(movingTab, targetStackId);
+        }
+
+        if (dropBefore) {
+          gBrowser.moveTabsBefore(movingTabs, tab);
+        } 
+        else {
+          gBrowser.moveTabsAfter(movingTabs, tab);
+        }
+
+        this.refresh();
+      }
+
       this._draggedStackTab = null;
+      this._draggedExternalTab = null;
       this._draggedButton = null;
+      this._isDraggingTab = false;
+      this._mouseDownOnTab = false;
     });
 
     button.addEventListener("dragend", event => {
@@ -372,10 +764,108 @@ var TabStacks = {
         }
       }
       this._draggedStackTab = null;
+      this._draggedExternalTab = null;
       this._draggedButton = null;
+      this._isDraggingTab = false;
+      this._mouseDownOnTab = false;
+      this.refresh();
     });
 
     return button;
+  },
+
+  _setupStackBarRowDnd(row) {
+    row.addEventListener("dragover", event => {
+      if (event.target.closest(".tab-stack-tab")) {
+        return;
+      }
+      if (!this.isTabDrag(event)) {
+        return;
+      }
+
+      let draggedTab = this.getDraggedTab(event);
+      if (draggedTab) {
+        if (draggedTab.pinned || draggedTab.closing) {
+          return;
+        }
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "move";
+      this._isDraggingTab = true;
+
+      for (let child of row.children) {
+        child.removeAttribute("stack-drop-before");
+        child.removeAttribute("stack-drop-after");
+      }
+
+      if (row.lastElementChild) {
+        row.lastElementChild.toggleAttribute("stack-drop-after", true);
+      }
+    });
+
+    row.addEventListener("dragleave", event => {
+      if (event.target.closest(".tab-stack-tab")) {
+        return;
+      }
+      let related = event.relatedTarget;
+
+      if (!row.contains(related)) {
+        for (let child of row.children) {
+          child.removeAttribute("stack-drop-before");
+          child.removeAttribute("stack-drop-after");
+        }
+      }
+    });
+
+    row.addEventListener("drop", event => {
+      if (event.target.closest(".tab-stack-tab")) {
+        return;
+      }
+
+      let draggedTab = this.getDraggedTab(event);
+      if (!draggedTab || draggedTab.pinned || draggedTab.closing) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+
+      for (let child of row.children) {
+        child.removeAttribute("stack-drop-before");
+        child.removeAttribute("stack-drop-after");
+      }
+
+      let activeStack = this.activeStackTabs();
+      if (!activeStack.length) {
+        return;
+      }
+
+      let targetStackId = this.stackId(activeStack[0]);
+      let lastTab = activeStack.at(-1);
+
+      if (this.stackId(draggedTab) === targetStackId) {
+        if (draggedTab !== lastTab) {
+          this.moveInStack(draggedTab, lastTab, false);
+        }
+      } 
+      else {
+        let movingTabs = this.stackTabs(draggedTab);
+        if (!movingTabs.length) {
+          movingTabs = [draggedTab];
+        }
+        for (let movingTab of movingTabs) {
+          this.setStack(movingTab, targetStackId);
+        }
+        gBrowser.moveTabsAfter(movingTabs, lastTab);
+        this.refresh();
+      }
+
+      this._draggedStackTab = null;
+      this._draggedExternalTab = null;
+      this._draggedButton = null;
+      this._isDraggingTab = false;
+      this._mouseDownOnTab = false;
+    });
   },
 
   renderStackBars() {
@@ -386,9 +876,15 @@ var TabStacks = {
       return;
     }
 
+    if (this._isDraggingTab || this._mouseDownOnTab) {
+      if (container.firstElementChild && !bar.hidden) {
+        return;
+      }
+    }
+
     let stack =
       gBrowser.tabContainer.getAttribute("orient") == "horizontal"
-        ? this.stackTabs(gBrowser.selectedTab)
+        ? this.activeStackTabs()
         : [];
     if (stack.length < 2 || this.isCollapsed(stack[0])) {
       stack = [];
@@ -405,6 +901,7 @@ var TabStacks = {
     row.className = "tab-stack-bar-row";
     row.setAttribute("role", "tablist");
     row.append(...stack.map(tab => this.createStackBarTab(tab)));
+    this._setupStackBarRowDnd(row);
     
     container.replaceChildren(row);
   },

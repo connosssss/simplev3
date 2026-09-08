@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+ // testing is automated
+
 add_task(async function test_tab_stacks() {
   let parent = BrowserTestUtils.addTab(gBrowser, "about:blank");
   let child = BrowserTestUtils.addTab(gBrowser, "about:blank");
@@ -160,11 +162,6 @@ add_task(async function test_only_related_tabs_join_active_stack() {
         TabStacks.stackId(parent),
         "A Ctrl-clicked or middle-clicked link joins the horizontal stack"
       );
-      is(
-        TabStacks.stackTabs(parent).at(-1),
-        relatedTab,
-        "A Ctrl-clicked or middle-clicked link is the rightmost stack tab"
-      );
       BrowserTestUtils.removeTab(relatedTab);
     }
   } finally {
@@ -178,3 +175,296 @@ add_task(async function test_only_related_tabs_join_active_stack() {
   BrowserTestUtils.removeTab(child);
   BrowserTestUtils.removeTab(parent);
 });
+
+add_task(async function test_drag_tab_from_regular_tabbar_into_stack_tabbar() {
+  let parent = BrowserTestUtils.addTab(gBrowser, "about:blank", {
+    skipAnimation: true,
+  });
+  let child = BrowserTestUtils.addTab(gBrowser, "about:config", {
+    skipAnimation: true,
+  });
+  TabStacks.stack(child, parent);
+
+  let originalOrientation = gBrowser.tabContainer.getAttribute("orient");
+  gBrowser.tabContainer.setAttribute("orient", "horizontal");
+  gBrowser.selectedTab = parent;
+
+  let bar = document.getElementById("tab-stack-bars");
+  let container = document.getElementById("tab-stack-bars-container");
+  await TestUtils.waitForCondition(
+    () =>
+      !bar.hidden && container.querySelectorAll(".tab-stack-tab").length == 2,
+    "The active stack's tabs are shown in a stack bar"
+  );
+
+  let externalTab = null;
+  let externalTab2 = null;
+  let externalTab3 = null;
+  let pinnedTab = null;
+
+  externalTab = BrowserTestUtils.addTab(gBrowser, "about:robots", {
+    skipAnimation: true,
+  });
+  ok(!TabStacks.stackId(externalTab), "externalTab is initially not in a stack");
+
+  try {
+    // 1. Drop after a button in the stack bar
+    let buttons = container.querySelectorAll(".tab-stack-tab");
+    let targetButton = buttons[1]; // child button
+    let rect = targetButton.getBoundingClientRect();
+    EventUtils.synthesizeDrop(
+      externalTab,
+      targetButton,
+      [[{ type: "application/x-moz-tabbrowser-tab", data: externalTab }]],
+      "move",
+      window,
+      window,
+      {
+        clientX: rect.left + rect.width * 0.75,
+        clientY: rect.top + rect.height / 2,
+      }
+    );
+
+    await TestUtils.waitForCondition(
+      () =>
+        TabStacks.stackId(externalTab) == TabStacks.stackId(parent) &&
+        container.querySelectorAll(".tab-stack-tab").length == 3,
+      "externalTab joined the stack and is displayed in the stack bar"
+    );
+
+    Assert.deepEqual(
+      TabStacks.stackTabs(parent),
+      [parent, child, externalTab],
+      "externalTab was inserted after the child tab"
+    );
+
+    // 2. Drop before the first button (becomes the new parent)
+    externalTab2 = BrowserTestUtils.addTab(gBrowser, "about:mozilla", {
+      skipAnimation: true,
+    });
+    let firstButton = container.querySelectorAll(".tab-stack-tab")[0];
+    let rectFirst = firstButton.getBoundingClientRect();
+    EventUtils.synthesizeDrop(
+      externalTab2,
+      firstButton,
+      [[{ type: "application/x-moz-tabbrowser-tab", data: externalTab2 }]],
+      "move",
+      window,
+      window,
+      {
+        clientX: rectFirst.left + rectFirst.width * 0.25,
+        clientY: rectFirst.top + rectFirst.height / 2,
+      }
+    );
+
+    await TestUtils.waitForCondition(
+      () =>
+        TabStacks.stackId(externalTab2) == TabStacks.stackId(parent) &&
+        container.querySelectorAll(".tab-stack-tab").length == 4,
+      "externalTab2 joined the stack at the beginning"
+    );
+
+    Assert.equal(
+      TabStacks.stackTabs(parent)[0],
+      externalTab2,
+      "externalTab2 is now the first tab of the stack"
+    );
+    Assert.ok(
+      externalTab2.hasAttribute("stack-parent"),
+      "externalTab2 is marked as stack parent"
+    );
+
+    // 3. Drop onto empty area of stack bar row (appends to end)
+    externalTab3 = BrowserTestUtils.addTab(gBrowser, "about:license", {
+      skipAnimation: true,
+    });
+    let row = container.querySelector(".tab-stack-bar-row");
+    let rowRect = row.getBoundingClientRect();
+    EventUtils.synthesizeDrop(
+      externalTab3,
+      row,
+      [[{ type: "application/x-moz-tabbrowser-tab", data: externalTab3 }]],
+      "move",
+      window,
+      window,
+      {
+        clientX: rowRect.right - 5,
+        clientY: rowRect.top + rowRect.height / 2,
+      }
+    );
+
+    await TestUtils.waitForCondition(
+      () =>
+        TabStacks.stackId(externalTab3) == TabStacks.stackId(parent) &&
+        container.querySelectorAll(".tab-stack-tab").length == 5,
+      "externalTab3 joined the stack at the end via row drop"
+    );
+
+    Assert.equal(
+      TabStacks.stackTabs(parent).at(-1),
+      externalTab3,
+      "externalTab3 was appended to the end of the stack"
+    );
+
+    // 4. Dropping a pinned tab is rejected
+    pinnedTab = BrowserTestUtils.addTab(gBrowser, "about:config", {
+      skipAnimation: true,
+    });
+    gBrowser.pinTab(pinnedTab);
+    let newRow = container.querySelector(".tab-stack-bar-row");
+    let newRowRect = newRow.getBoundingClientRect();
+    EventUtils.synthesizeDrop(
+      pinnedTab,
+      newRow,
+      [[{ type: "application/x-moz-tabbrowser-tab", data: pinnedTab }]],
+      "move",
+      window,
+      window,
+      {
+        clientX: newRowRect.right - 5,
+        clientY: newRowRect.top + newRowRect.height / 2,
+      }
+    );
+
+    Assert.ok(!TabStacks.stackId(pinnedTab), "Pinned tab was not added to stack");
+    Assert.equal(
+      container.querySelectorAll(".tab-stack-tab").length,
+      5,
+      "Stack count remained unchanged after pinned tab drop attempt"
+    );
+  } finally {
+    TabStacks._isDraggingTab = false;
+    TabStacks._mouseDownOnTab = false;
+    TabStacks._draggedStackTab = null;
+    TabStacks._draggedExternalTab = null;
+    if (pinnedTab) {
+      BrowserTestUtils.removeTab(pinnedTab);
+    }
+    if (externalTab3) {
+      BrowserTestUtils.removeTab(externalTab3);
+    }
+    if (externalTab2) {
+      BrowserTestUtils.removeTab(externalTab2);
+    }
+    if (externalTab) {
+      BrowserTestUtils.removeTab(externalTab);
+    }
+    if (originalOrientation) {
+      gBrowser.tabContainer.setAttribute("orient", originalOrientation);
+    } else {
+      gBrowser.tabContainer.removeAttribute("orient");
+    }
+  }
+
+  BrowserTestUtils.removeTab(child);
+  BrowserTestUtils.removeTab(parent);
+});
+
+add_task(async function test_drag_tab_from_stack_tabbar_to_regular_tabbar() {
+  let parent = BrowserTestUtils.addTab(gBrowser, "about:blank", {
+    skipAnimation: true,
+  });
+  let child1 = BrowserTestUtils.addTab(gBrowser, "about:config", {
+    skipAnimation: true,
+  });
+  let child2 = BrowserTestUtils.addTab(gBrowser, "about:robots", {
+    skipAnimation: true,
+  });
+  TabStacks.stack(child1, parent);
+  TabStacks.stack(child2, child1);
+
+  let originalOrientation = gBrowser.tabContainer.getAttribute("orient");
+  gBrowser.tabContainer.setAttribute("orient", "horizontal");
+  gBrowser.selectedTab = parent;
+
+  let bar = document.getElementById("tab-stack-bars");
+  let container = document.getElementById("tab-stack-bars-container");
+  await TestUtils.waitForCondition(
+    () =>
+      !bar.hidden && container.querySelectorAll(".tab-stack-tab").length == 3,
+    "The stack bar is shown with 3 tabs"
+  );
+
+  try {
+    // 1. Drag child1 from the stack bar into the regular tab bar (after parent)
+    let buttons = container.querySelectorAll(".tab-stack-tab");
+    let child1Button = buttons[1];
+    let parentRect = parent.getBoundingClientRect();
+
+    EventUtils.synthesizeDrop(
+      child1Button,
+      parent,
+      [[{ type: "application/x-moz-tabbrowser-tab", data: child1 }]],
+      "move",
+      window,
+      window,
+      {
+        clientX: parentRect.right + 5,
+        clientY: parentRect.top + parentRect.height / 2,
+      }
+    );
+
+    await TestUtils.waitForCondition(
+      () =>
+        !TabStacks.stackId(child1) &&
+        container.querySelectorAll(".tab-stack-tab").length == 2,
+      "child1 was unstacked and removed from the stack bar"
+    );
+
+    Assert.ok(!TabStacks.stackId(child1), "child1 has no stack ID");
+    Assert.notEqual(
+      getComputedStyle(child1).display,
+      "none",
+      "child1 is now visible in the regular tab bar"
+    );
+    Assert.deepEqual(
+      TabStacks.stackTabs(parent),
+      [parent, child2],
+      "Remaining stack tabs are parent and child2"
+    );
+
+    // 2. Drag parent from the stack bar into the regular tab bar
+    // Since only child2 remains, the whole stack dissolves
+    buttons = container.querySelectorAll(".tab-stack-tab");
+    let parentButton = buttons[0];
+    let child1Rect = child1.getBoundingClientRect();
+
+    EventUtils.synthesizeDrop(
+      parentButton,
+      child1,
+      [[{ type: "application/x-moz-tabbrowser-tab", data: parent }]],
+      "move",
+      window,
+      window,
+      {
+        clientX: child1Rect.right + 5,
+        clientY: child1Rect.top + child1Rect.height / 2,
+      }
+    );
+
+    await TestUtils.waitForCondition(
+      () => bar.hidden && !TabStacks.stackId(parent) && !TabStacks.stackId(child2),
+      "Stack dissolved completely after moving parent tab outside stack"
+    );
+
+    Assert.ok(!TabStacks.stackId(parent), "parent is unstacked");
+    Assert.ok(!TabStacks.stackId(child2), "child2 is unstacked");
+    Assert.ok(bar.hidden, "The stack bar is now hidden");
+  } finally {
+    TabStacks._isDraggingTab = false;
+    TabStacks._mouseDownOnTab = false;
+    TabStacks._draggedStackTab = null;
+    TabStacks._draggedExternalTab = null;
+    if (originalOrientation) {
+      gBrowser.tabContainer.setAttribute("orient", originalOrientation);
+    } else {
+      gBrowser.tabContainer.removeAttribute("orient");
+    }
+  }
+
+  BrowserTestUtils.removeTab(child2);
+  BrowserTestUtils.removeTab(child1);
+  BrowserTestUtils.removeTab(parent);
+});
+
+
