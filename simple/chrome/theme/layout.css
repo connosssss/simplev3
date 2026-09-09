@@ -1,1 +1,9 @@
 /* Custom Layout Rules */
+
+/* Uniform toolbar color when transparency is off */
+#TabsToolbar,
+#tab-stack-bars,
+#nav-bar {
+  background-color: #1e2235 !important;
+  background-image: none !important;
+}
