@@ -36,8 +36,8 @@ add_task(async function test_tab_stacks() {
 
   BrowserTestUtils.removeTab(parent);
   Assert.ok(
-    child.hasAttribute("stack-parent"),
-    "closing the parent promotes the next stack member"
+    child.hasAttribute("stack-current"),
+    "closing the current tab promotes the next stack member"
   );
   Assert.ok(
     grandchild.hasAttribute("stack-child"),
@@ -270,8 +270,8 @@ add_task(async function test_drag_tab_from_regular_tabbar_into_stack_tabbar() {
       "externalTab2 is now the first tab of the stack"
     );
     Assert.ok(
-      externalTab2.hasAttribute("stack-parent"),
-      "externalTab2 is marked as stack parent"
+      externalTab2.hasAttribute("stack-current"),
+      "externalTab2 is marked as stack current tab"
     );
 
     // 3. Drop onto empty area of stack bar row (appends to end)

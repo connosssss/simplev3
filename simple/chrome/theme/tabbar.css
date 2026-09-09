@@ -1,6 +1,4 @@
-.tabbrowser-tab {
-  --stack-color: #8b5cf6;
-}
+
 
 #tab-stack-bars {
   min-height: var(--tabstrip-min-height);
@@ -29,6 +27,13 @@
   max-width: 225px;
 }
 
+/* Give stack bar tab icons the same spacing as regular tabs */
+.tab-stack-tab .tab-icon-image,
+.tab-stack-tab .tab-icon-pending,
+.tab-stack-tab .tab-throbber {
+  margin-inline-end: var(--tab-icon-end-margin);
+}
+
 #tab-stack-bars .tab-stack-tab > .tab-stack {
   min-height: var(--tabstrip-min-height);
 }
@@ -37,22 +42,19 @@
   display: none !important;
 }
 
-.tabbrowser-tab[stack-parent] > .tab-stack > .tab-background {
-  box-shadow: inset 3px 0 var(--stack-color);
+.tabbrowser-tab[stack-current] > .tab-stack > .tab-background {
+  background-color: color-mix(in srgb, white 8%, transparent) !important;
 }
 
-.tabbrowser-tab[stack-parent] .tab-label::after {
-  content: " " attr(data-stack-tab-count);
-  margin-inline-start: 4px;
+.tab-stack-count {
   opacity: 0.7;
-}
-
-.tabbrowser-tab[stack-child] > .tab-stack > .tab-content {
-  border-inline-start: 2px solid var(--stack-color);
+  font-size: 0.85em;
+  margin-inline-end: 4px;
+  pointer-events: none;
 }
 
 .tabbrowser-tab[stack-child] > .tab-stack > .tab-background {
-  background-color: color-mix(in srgb, var(--stack-color) 16%, transparent) !important;
+  background-color: color-mix(in srgb, white 8%, transparent) !important;
 }
 
 #tabbrowser-tabs[orient="vertical"] .tabbrowser-tab[stack-child] > .tab-stack {
@@ -71,9 +73,9 @@
 }
 
 .tab-stack-tab[stack-drop-before] {
-  box-shadow: inset 3px 0 0 var(--stack-color, #8b5cf6);
+  box-shadow: inset 3px 0 0 rgba(255, 255, 255, 0.4);
 }
 
 .tab-stack-tab[stack-drop-after] {
-  box-shadow: inset -3px 0 0 var(--stack-color, #8b5cf6);
+  box-shadow: inset -3px 0 0 rgba(255, 255, 255, 0.4);
 }

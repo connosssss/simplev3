@@ -449,12 +449,16 @@ var TabStacks = {
 
   isParent(tab) {
     let stack = this.stackTabs(tab);
-    return stack.length > 1 && stack[0] == tab;
+    if (stack.length < 2) return false;
+    let currentTab = stack.find(t => t.selected) || stack[0];
+    return tab === currentTab;
   },
 
   isChild(tab) {
     let stack = this.stackTabs(tab);
-    return stack.length > 1 && stack[0] != tab;
+    if (stack.length < 2) return false;
+    let currentTab = stack.find(t => t.selected) || stack[0];
+    return tab !== currentTab;
   },
 
   stack(tab, parent) {
@@ -912,10 +916,12 @@ var TabStacks = {
     for (let tab of this.tabs()) {
       tab.toggleAttribute("stack-child", false);
       tab.toggleAttribute("stack-hidden", false);
-      tab.toggleAttribute("stack-parent", false);
+      tab.toggleAttribute("stack-current", false);
       tab.toggleAttribute("stack-collapsed", false);
       tab.style.setProperty("--stack-depth", 0);
       delete tab.dataset.stackTabCount;
+      let existingBadge = tab.querySelector(".tab-stack-count");
+      if (existingBadge) existingBadge.remove();
 
       let stackId = this.stackId(tab);
 
@@ -936,15 +942,23 @@ var TabStacks = {
       }
 
       let collapsed = this.isCollapsed(stack[0]);
-      for (let [index, tab] of stack.entries()) {
-        let isParent = index == 0;
-        tab.toggleAttribute("stack-child", !isParent);
-        tab.toggleAttribute("stack-hidden", !isParent && collapsed);
-        tab.toggleAttribute("stack-parent", isParent);
-        tab.toggleAttribute("stack-collapsed", isParent && collapsed);
-        tab.style.setProperty("--stack-depth", isParent ? 0 : 1);
-        if (isParent) {
+      let currentTab = stack.find(t => t.selected) || stack[0];
+      for (let tab of stack) {
+        let isCurrent = tab === currentTab;
+        tab.toggleAttribute("stack-child", !isCurrent);
+        tab.toggleAttribute("stack-hidden", !isCurrent && collapsed);
+        tab.toggleAttribute("stack-current", isCurrent);
+        tab.toggleAttribute("stack-collapsed", isCurrent && collapsed);
+        tab.style.setProperty("--stack-depth", isCurrent ? 0 : 1);
+        if (isCurrent) {
           tab.dataset.stackTabCount = stack.length;
+          let closeBtn = tab.querySelector(".tab-close-button");
+          if (closeBtn) {
+            let badge = document.createElement("span");
+            badge.className = "tab-stack-count";
+            badge.textContent = stack.length;
+            closeBtn.parentNode.insertBefore(badge, closeBtn);
+          }
         }
       }
 
