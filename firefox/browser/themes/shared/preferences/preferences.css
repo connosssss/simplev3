@@ -239,7 +239,50 @@ radio {
   list-style-image: url("chrome://browser/skin/preferences/mozilla-logo.svg");
 }
 
-/* All panes */
+/* Section headers in category list */
+
+.category-header {
+  min-height: 28px !important;
+  padding-block: 8px 2px !important;
+  padding-inline-start: 12px !important;
+  cursor: default !important;
+  opacity: 1 !important;
+  pointer-events: none !important;
+  user-select: none !important;
+}
+
+.category-header:first-child {
+  padding-top: 2px !important;
+}
+
+.category-header:hover,
+.category-header[selected] {
+  background-color: transparent !important;
+  color: inherit !important;
+}
+
+.category-header-label {
+  font-size: 0.75em !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.05em !important;
+  color: var(--text-color-deemphasized) !important;
+  margin: 0 !important;
+}
+
+.category-header > .category-icon {
+  display: none !important;
+}
+
+/* Simple category icons */
+
+#category-simple-appearance > .category-icon {
+  list-style-image: url("chrome://global/skin/icons/settings.svg");
+}
+
+#category-simple-tab-management > .category-icon {
+  list-style-image: url("chrome://browser/skin/tab.svg");
+}
 
 .info-icon,
 .androidIcon,

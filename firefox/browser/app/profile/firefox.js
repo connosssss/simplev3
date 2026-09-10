@@ -3412,3 +3412,7 @@ pref("browser.ipProtection.enabled", false);
 pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);
 pref("svg.context-properties.content.enabled", true);
 pref("layout.css.has-selector.enabled", true);
+
+pref("simple.theme.transparent-toolbar", false);
+pref("simple.theme.transparent-toolbar.opacity", 55);
+

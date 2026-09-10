@@ -13,6 +13,8 @@
 /* import-globals-from experimental.js */
 /* import-globals-from moreFromMozilla.js */
 /* import-globals-from findInPage.js */
+/* import-globals-from simpleAppearance.js */
+/* import-globals-from simpleTabManagement.js */
 /* import-globals-from /browser/base/content/utilityOverlay.js */
 /* import-globals-from /toolkit/content/preferencesBindings.js */
 
@@ -191,6 +193,8 @@ function init_all() {
   // the entire document.
   Preferences.queueUpdateOfAllElements();
 
+  register_module("paneSimpleAppearance", gSimpleAppearancePane);
+  register_module("paneSimpleTabManagement", gSimpleTabManagementPane);
   register_module("paneGeneral", gMainPane);
   register_module("paneHome", gHomePane);
   register_module("paneSearch", gSearchPane);
@@ -231,7 +235,11 @@ function init_all() {
   gMainPane.preInit();
 
   let categories = document.getElementById("categories");
-  categories.addEventListener("select", event => gotoPref(event.target.value));
+  categories.addEventListener("select", event => {
+    if (event.target.value) {
+      gotoPref(event.target.value);
+    }
+  });
 
   document.documentElement.addEventListener("keydown", function (event) {
     if (event.keyCode == KeyEvent.DOM_VK_TAB) {
