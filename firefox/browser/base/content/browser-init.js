@@ -309,22 +309,7 @@ var TabStacks = {
   activeStackTabs() {
     let selectedStack = this.stackTabs(gBrowser.selectedTab);
     if (selectedStack.length >= 2 && !this.isCollapsed(selectedStack[0])) {
-      this._lastActiveStackId = this.stackId(selectedStack[0]);
       return selectedStack;
-    }
-    // if a regular tab is selected, keeps the stack bar below active so you can still drag it in
-    if (
-      (this._isDraggingTab || this._mouseDownOnTab) &&
-      this._lastActiveStackId
-    ) {
-
-      let lastStack = this.tabs().filter(
-        candidate => this.stackId(candidate) == this._lastActiveStackId
-      );
-
-      if (lastStack.length >= 2 && !this.isCollapsed(lastStack[0])) {
-        return lastStack;
-      }
     }
     return [];
   },
@@ -878,12 +863,6 @@ var TabStacks = {
 
     if (!bar || !container) {
       return;
-    }
-
-    if (this._isDraggingTab || this._mouseDownOnTab) {
-      if (container.firstElementChild && !bar.hidden) {
-        return;
-      }
     }
 
     let stack =
@@ -1601,6 +1580,7 @@ var gBrowserInit = {
     SessionStore.promiseAllWindowsRestored.then(() => {
       this._schedulePerWindowIdleTasks();
       document.documentElement.setAttribute("sessionrestored", "true");
+      TabStacks.refresh();
     });
 
     TabStacks.init();

@@ -53,6 +53,7 @@ add_task(async function test_tab_stacks() {
   BrowserTestUtils.removeTab(child);
 });
 
+
 add_task(async function test_active_stack_gets_a_stack_bar() {
   let parent = BrowserTestUtils.addTab(gBrowser, "about:blank", {
     skipAnimation: true,
@@ -112,6 +113,49 @@ add_task(async function test_active_stack_gets_a_stack_bar() {
   );
 
   TabStacks.toggle(parent);
+  BrowserTestUtils.removeTab(child);
+  BrowserTestUtils.removeTab(parent);
+});
+
+add_task(async function test_stack_bar_hides_outside_active_stack() {
+  let parent = BrowserTestUtils.addTab(gBrowser, "about:blank", {
+    skipAnimation: true,
+  });
+  let child = BrowserTestUtils.addTab(gBrowser, "about:config", {
+    skipAnimation: true,
+  });
+  let regularTab = BrowserTestUtils.addTab(gBrowser, "about:robots", {
+    skipAnimation: true,
+  });
+  let originalOrientation = gBrowser.tabContainer.getAttribute("orient");
+  let bar = document.getElementById("tab-stack-bars");
+
+  try {
+    gBrowser.tabContainer.setAttribute("orient", "horizontal");
+    TabStacks.stack(child, parent);
+    gBrowser.selectedTab = parent;
+    await TestUtils.waitForCondition(
+      () => !bar.hidden,
+      "The active stack's tab bar is shown"
+    );
+
+    // A pending mouse/drag state must not keep the previous stack bar visible.
+    TabStacks._isDraggingTab = true;
+    TabStacks._mouseDownOnTab = true;
+    gBrowser.selectedTab = regularTab;
+    TabStacks.renderStackBars();
+    Assert.ok(bar.hidden, "The stack bar hides when a regular tab is selected");
+  } finally {
+    TabStacks._isDraggingTab = false;
+    TabStacks._mouseDownOnTab = false;
+    if (originalOrientation) {
+      gBrowser.tabContainer.setAttribute("orient", originalOrientation);
+    } else {
+      gBrowser.tabContainer.removeAttribute("orient");
+    }
+  }
+
+  BrowserTestUtils.removeTab(regularTab);
   BrowserTestUtils.removeTab(child);
   BrowserTestUtils.removeTab(parent);
 });
@@ -466,5 +510,3 @@ add_task(async function test_drag_tab_from_stack_tabbar_to_regular_tabbar() {
   BrowserTestUtils.removeTab(child1);
   BrowserTestUtils.removeTab(parent);
 });
-
-
