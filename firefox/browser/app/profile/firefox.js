@@ -28,6 +28,8 @@ pref("extensions.abuseReport.enabled", true);
 
 pref("simple.theme.transparent-toolbar", false);
 pref("simple.theme.transparent-toolbar.opacity", 55);
+pref("simple.tabs.hibernate.enabled", false);
+pref("simple.tabs.hibernate.timeout_minutes", 30);
 pref("widget.windows.mica", true);
 pref("widget.windows.mica.toplevel-backdrop", 2);
 
@@ -3415,4 +3417,3 @@ pref("layout.css.has-selector.enabled", true);
 
 pref("simple.theme.transparent-toolbar", false);
 pref("simple.theme.transparent-toolbar.opacity", 55);
-

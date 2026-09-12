@@ -407,6 +407,8 @@ let unloadTests = [
 ];
 
 let globalBrowser = {
+  async prepareDiscardBrowser() {},
+
   discardBrowser() {
     return true;
   },
@@ -446,4 +448,39 @@ add_task(async function doTests() {
 
     Assert.equal(expectedOrder, test.result);
   }
+});
+
+add_task(async function unloads_all_inactive_tabs_but_not_media_tabs() {
+  let discardedTabs = [];
+  let tabs = ["1", "2 media", "3", "4 selected"];
+
+  TestTabUnloaderMethods.iterateTabs = function* () {
+    for (let originalIndex = 0; originalIndex < tabs.length; originalIndex++) {
+      let tab = {
+        originalIndex,
+        lastAccessed: Number(/^[0-9]+/.exec(tabs[originalIndex])[0]),
+        keywords: tabs[originalIndex],
+        process: "1",
+        updateLastUnloadedByTabUnloader() {},
+      };
+      yield {
+        tab,
+        gBrowser: {
+          async prepareDiscardBrowser() {},
+          discardBrowser() {
+            discardedTabs.push(originalIndex);
+            return true;
+          },
+        },
+      };
+    }
+  };
+
+  let unloadedTabs = await TabUnloader.unloadTabsInactiveFor(
+    0,
+    TestTabUnloaderMethods
+  );
+
+  Assert.equal(unloadedTabs, 2, "all eligible inactive tabs were unloaded");
+  Assert.deepEqual(discardedTabs, [0, 2], "media and selected tabs were kept");
 });

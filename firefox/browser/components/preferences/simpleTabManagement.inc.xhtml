@@ -9,4 +9,33 @@
   <html:h1>Tab Management</html:h1>
 </hbox>
 
+<groupbox id="simpleTabHibernationGroup"
+          data-category="paneSimpleTabManagement"
+          hidden="true">
+  <checkbox id="simpleTabHibernationEnabled"
+            label="Hibernate inactive tabs"
+            preference="simple.tabs.hibernate.enabled"/>
+  <description class="indent tip-caption">
+    Unload tabs that have not been used for the selected amount of time to free memory.
+  </description>
+
+  <hbox id="simpleTabHibernationTimeoutBox" class="indent" align="center">
+    <label control="simpleTabHibernationTimeout">Hibernate tabs after:</label>
+    <menulist id="simpleTabHibernationTimeout"
+              preference="simple.tabs.hibernate.timeout_minutes">
+      <menupopup>
+        <menuitem label="5 minutes" value="5"/>
+        <menuitem label="15 minutes" value="15"/>
+        <menuitem label="30 minutes" value="30"/>
+        <menuitem label="1 hour" value="60"/>
+        <menuitem label="2 hours" value="120"/>
+        <menuitem label="4 hours" value="240"/>
+      </menupopup>
+    </menulist>
+  </hbox>
+  <description id="simpleTabHibernationProtection" class="indent tip-caption">
+    Tabs playing media, using Picture-in-Picture, or using WebRTC are kept active.
+  </description>
+</groupbox>
+
 </html:template>

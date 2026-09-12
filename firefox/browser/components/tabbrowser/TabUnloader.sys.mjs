@@ -30,6 +30,11 @@ const kMinInactiveDurationInMs = Services.prefs.getIntPref(
   "browser.tabs.min_inactive_duration_before_unload"
 );
 
+const PREF_AUTO_HIBERNATE_ENABLED = "simple.tabs.hibernate.enabled";
+const PREF_AUTO_HIBERNATE_TIMEOUT_MINUTES =
+  "simple.tabs.hibernate.timeout_minutes";
+const AUTO_HIBERNATE_INTERVAL_MS = 60 * 1000;
+
 let criteriaTypes = [
   ["isNonDiscardable", NEVER_DISCARD],
   ["isLoading", 8],
@@ -163,10 +168,69 @@ export var TabUnloader = {
    * Initialize low-memory detection and tab auto-unloading.
    */
   init() {
+    if (this._initialized) {
+      return;
+    }
+    this._initialized = true;
+
     const watcher = Cc["@mozilla.org/xpcom/memory-watcher;1"].getService(
       Ci.nsIAvailableMemoryWatcherBase
     );
     watcher.registerTabUnloader(this);
+
+    Services.prefs.addObserver(PREF_AUTO_HIBERNATE_ENABLED, this);
+    Services.prefs.addObserver(PREF_AUTO_HIBERNATE_TIMEOUT_MINUTES, this);
+    this._updateAutoHibernateTimer();
+  },
+
+  observe(subject, topic) {
+    if (topic == "nsPref:changed") {
+      this._updateAutoHibernateTimer();
+    }
+  },
+
+  _updateAutoHibernateTimer() {
+    if (!Services.prefs.getBoolPref(PREF_AUTO_HIBERNATE_ENABLED, false)) {
+      this._autoHibernateTimer?.cancel();
+      this._autoHibernateTimer = null;
+      return;
+    }
+
+    if (!this._autoHibernateTimer) {
+      this._autoHibernateTimer = Cc["@mozilla.org/timer;1"].createInstance(
+        Ci.nsITimer
+      );
+      this._autoHibernateTimer.initWithCallback(
+        () => this._hibernateInactiveTabs(),
+        AUTO_HIBERNATE_INTERVAL_MS,
+        Ci.nsITimer.TYPE_REPEATING_SLACK
+      );
+    }
+
+    this._hibernateInactiveTabs();
+  },
+
+  async _hibernateInactiveTabs() {
+    if (this._isUnloading) {
+      return;
+    }
+
+    this._isUnloading = true;
+    try {
+      const timeoutMinutes = Math.max(
+        1,
+        Services.prefs.getIntPref(PREF_AUTO_HIBERNATE_TIMEOUT_MINUTES, 30)
+      );
+      await this.unloadTabsInactiveFor(timeoutMinutes * 60 * 1000);
+    }
+
+    catch (error) {
+      console.error("Unable to hibernate inactive tabs", error);
+    }
+
+    finally {
+      this._isUnloading = false;
+    }
   },
 
   isDiscardable(tab) {
@@ -322,13 +386,35 @@ export var TabUnloader = {
   async unloadLeastRecentlyUsedTab(
     minInactiveDuration = kMinInactiveDurationInMs
   ) {
-    const sortedTabs = await this.getSortedTabs(minInactiveDuration);
+    return (
+      (await this._unloadTabs(minInactiveDuration, 1)) > 0
+    );
+  },
+
+  
+  async unloadTabsInactiveFor(
+    minInactiveDuration = kMinInactiveDurationInMs,
+    tabMethods = DefaultTabUnloaderMethods
+  ) {
+    return this._unloadTabs(minInactiveDuration, Infinity, tabMethods);
+  },
+
+  async _unloadTabs(
+    minInactiveDuration,
+    maximumTabs,
+    tabMethods = DefaultTabUnloaderMethods
+  ) {
+    const sortedTabs = await this.getSortedTabs(
+      minInactiveDuration,
+      tabMethods
+    );
+    let unloadedTabs = 0;
 
     for (let tabInfo of sortedTabs) {
       if (!this.isDiscardable(tabInfo)) {
         // Since |sortedTabs| is sorted, once we see an undiscardable tab
         // no need to continue the loop.
-        return false;
+        break;
       }
 
       const remoteType = tabInfo.tab?.linkedBrowser?.remoteType;
@@ -338,10 +424,13 @@ export var TabUnloader = {
           `TabUnloader discarded <${remoteType}>`
         );
         tabInfo.tab.updateLastUnloadedByTabUnloader();
-        return true;
+        unloadedTabs++;
+        if (unloadedTabs == maximumTabs) {
+          break;
+        }
       }
     }
-    return false;
+    return unloadedTabs;
   },
 
   QueryInterface: ChromeUtils.generateQI([
