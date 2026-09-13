@@ -38,8 +38,7 @@ var TabStacks = {
       }
       this.renderStackBars();
     };
-    // drag moves preserve stack membership but can separate a stack;
-    // add tree-aware drag handling only if that becomes problem
+    // Main tab-bar drags keep a stack together; the stack bar can pull out one tab.
     this._onTabMove = () => this.refresh();
     this._onPopupShowing = event => {
       if (event.target == this.menu) {
@@ -108,8 +107,13 @@ var TabStacks = {
       }
 
       let draggedTab = this.getDraggedTab(event);
+      let targetTab = event.target.closest("tab, .tabbrowser-tab");
       if (draggedTab) {
-        if (!this._draggedStackTab && !this.stackId(draggedTab)) {
+        if (
+          !this._draggedStackTab &&
+          !this.stackId(draggedTab) &&
+          !(targetTab && this.stackId(targetTab))
+        ) {
           return;
         }
       } 
@@ -136,18 +140,22 @@ var TabStacks = {
       }
 
       let draggedTab = this.getDraggedTab(event);
-      if (!draggedTab || (!this._draggedStackTab && !this.stackId(draggedTab))) {
+      let targetTab = event.target.closest("tab, .tabbrowser-tab");
+      if (!targetTab) {
+        targetTab = gBrowser.visibleTabs.at(-1);
+      }
+      if (
+        !draggedTab ||
+        (!this._draggedStackTab &&
+          !this.stackId(draggedTab) &&
+          !(targetTab && this.stackId(targetTab)))
+      ) {
         return;
       }
 
       event.preventDefault();
       event.stopPropagation();
       this._clearTabStripDropIndicator();
-
-      let targetTab = event.target.closest("tab, .tabbrowser-tab");
-      if (!targetTab) {
-        targetTab = gBrowser.visibleTabs.at(-1);
-      }
 
       let isVertical = gBrowser.tabContainer.getAttribute("orient") == "vertical";
       let dropBefore = false;
@@ -159,15 +167,23 @@ var TabStacks = {
           : event.clientX < tabRect.left + tabRect.width / 2;
       }
 
-      this.setStack(draggedTab, "");
-      this.SessionStore.deleteCustomTabValue(draggedTab, this.COLLAPSED_KEY);
+      if (!this._draggedStackTab && this.stackId(draggedTab)) {
+        this.moveStack(draggedTab, targetTab, dropBefore);
+      } else {
+        this.setStack(draggedTab, "");
+        this.SessionStore.deleteCustomTabValue(draggedTab, this.COLLAPSED_KEY);
 
-      if (targetTab && targetTab !== draggedTab) {
-        if (dropBefore) {
-          gBrowser.moveTabBefore(draggedTab, targetTab);
-        } 
-        else {
-          gBrowser.moveTabAfter(draggedTab, targetTab);
+        if (targetTab && targetTab !== draggedTab) {
+          let targetTabs = this.stackTabs(targetTab);
+          targetTab = targetTabs.length
+            ? targetTabs[dropBefore ? 0 : targetTabs.length - 1]
+            : targetTab;
+          if (dropBefore) {
+            gBrowser.moveTabBefore(draggedTab, targetTab);
+          }
+          else {
+            gBrowser.moveTabAfter(draggedTab, targetTab);
+          }
         }
       }
 
@@ -561,6 +577,22 @@ var TabStacks = {
       gBrowser.moveTabAfter(tab, targetTab);
     }
     this.refresh();
+  },
+
+  moveStack(tab, targetTab, before = false) {
+    let movingTabs = this.stackTabs(tab);
+    if (!movingTabs.length || !targetTab || movingTabs.includes(targetTab)) {
+      return;
+    }
+
+    let targetTabs = this.stackTabs(targetTab);
+    targetTab = targetTabs.length ? targetTabs[before ? 0 : targetTabs.length - 1] : targetTab;
+
+    if (before) {
+      gBrowser.moveTabsBefore(movingTabs, targetTab);
+    } else {
+      gBrowser.moveTabsAfter(movingTabs, targetTab);
+    }
   },
 
   updateMenu() {

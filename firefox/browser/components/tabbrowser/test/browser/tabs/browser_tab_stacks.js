@@ -435,6 +435,7 @@ add_task(async function test_drag_tab_from_stack_tabbar_to_regular_tabbar() {
     let child1Button = buttons[1];
     let parentRect = parent.getBoundingClientRect();
 
+    TabStacks._draggedStackTab = child1;
     EventUtils.synthesizeDrop(
       child1Button,
       parent,
@@ -473,6 +474,7 @@ add_task(async function test_drag_tab_from_stack_tabbar_to_regular_tabbar() {
     let parentButton = buttons[0];
     let child1Rect = child1.getBoundingClientRect();
 
+    TabStacks._draggedStackTab = parent;
     EventUtils.synthesizeDrop(
       parentButton,
       child1,
@@ -509,4 +511,82 @@ add_task(async function test_drag_tab_from_stack_tabbar_to_regular_tabbar() {
   BrowserTestUtils.removeTab(child2);
   BrowserTestUtils.removeTab(child1);
   BrowserTestUtils.removeTab(parent);
+});
+
+add_task(async function test_drag_stack_in_regular_tabbar() {
+  let first = BrowserTestUtils.addTab(gBrowser, "about:blank", {
+    skipAnimation: true,
+  });
+  let firstChild = BrowserTestUtils.addTab(gBrowser, "about:config", {
+    skipAnimation: true,
+  });
+  let second = BrowserTestUtils.addTab(gBrowser, "about:robots", {
+    skipAnimation: true,
+  });
+  let secondChild = BrowserTestUtils.addTab(gBrowser, "about:mozilla", {
+    skipAnimation: true,
+  });
+  let regular = BrowserTestUtils.addTab(gBrowser, "about:license", {
+    skipAnimation: true,
+  });
+  let originalOrientation = gBrowser.tabContainer.getAttribute("orient");
+
+  try {
+    gBrowser.tabContainer.setAttribute("orient", "horizontal");
+    TabStacks.stack(firstChild, first);
+    TabStacks.stack(secondChild, second);
+    TabStacks._draggedExternalTab = first;
+
+    let rect = second.getBoundingClientRect();
+    TabStacks._onTabStripDrop({
+      dataTransfer: { dropEffect: "move" },
+      target: second,
+      clientX: rect.right,
+      clientY: rect.top + rect.height / 2,
+      preventDefault() {},
+      stopPropagation() {},
+    });
+
+    Assert.deepEqual(
+      [first, firstChild, second, secondChild].sort((a, b) => a._tPos - b._tPos),
+      [second, secondChild, first, firstChild],
+      "Dragging a stack in the main tab bar moves all of its tabs after the target stack"
+    );
+    Assert.equal(
+      TabStacks.stackId(first),
+      TabStacks.stackId(firstChild),
+      "The moved tabs remain in their stack"
+    );
+
+    TabStacks._draggedExternalTab = regular;
+    rect = second.getBoundingClientRect();
+    TabStacks._onTabStripDrop({
+      dataTransfer: { dropEffect: "move" },
+      target: second,
+      clientX: rect.right,
+      clientY: rect.top + rect.height / 2,
+      preventDefault() {},
+      stopPropagation() {},
+    });
+
+    Assert.deepEqual(
+      [first, firstChild, second, secondChild, regular].sort(
+        (a, b) => a._tPos - b._tPos
+      ),
+      [second, secondChild, regular, first, firstChild],
+      "A tab dropped beside a stack is placed beside the whole stack"
+    );
+  } finally {
+    TabStacks._draggedExternalTab = null;
+    if (originalOrientation) {
+      gBrowser.tabContainer.setAttribute("orient", originalOrientation);
+    } else {
+      gBrowser.tabContainer.removeAttribute("orient");
+    }
+    BrowserTestUtils.removeTab(regular);
+    BrowserTestUtils.removeTab(secondChild);
+    BrowserTestUtils.removeTab(second);
+    BrowserTestUtils.removeTab(firstChild);
+    BrowserTestUtils.removeTab(first);
+  }
 });
