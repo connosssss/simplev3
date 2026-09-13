@@ -284,6 +284,112 @@ radio {
   list-style-image: url("chrome://browser/skin/tab.svg");
 }
 
+#simpleTabListGroup {
+  margin-top: 24px;
+}
+
+.simple-tab-list {
+  gap: 2px;
+  margin-top: 8px;
+}
+
+.simple-tab-stack-toggle,
+.simple-tab-section-label {
+  color: var(--text-color-deemphasized);
+  font-size: 0.9em;
+  margin-top: 12px;
+}
+
+.simple-tab-stack-toggle:first-child {
+  margin-top: 0;
+}
+
+.simple-tab-stack-toggle {
+  align-items: center;
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  margin-inline-start: -4px;
+  min-height: 0;
+  min-width: 0;
+  padding: 4px;
+  text-align: start;
+}
+
+.simple-tab-stack-toggle:hover {
+  background: transparent;
+  text-decoration: underline;
+}
+
+.simple-tab-stack-toggle:focus-visible {
+  outline: 2px solid var(--focus-outline-color);
+  outline-offset: 1px;
+}
+
+.simple-tab-stack-chevron {
+  color: var(--text-color-deemphasized);
+  display: inline-block;
+  margin-inline-end: 6px;
+  width: 10px;
+}
+
+.simple-tab-stack-name {
+  color: var(--text-color);
+  font-weight: var(--font-weight-bold);
+}
+
+.simple-tab-stack-count {
+  color: var(--text-color-deemphasized);
+  margin-inline-start: 8px;
+}
+
+.simple-tab-section-label {
+  font-weight: var(--font-weight-bold);
+}
+
+.simple-tab-row {
+  border-radius: 4px;
+  min-height: 34px;
+  padding: 2px 6px;
+}
+
+.simple-tab-row[data-in-stack] {
+  padding-inline-start: 22px;
+}
+
+.simple-tab-row:hover {
+  background: var(--in-content-item-hover);
+}
+
+.simple-tab-icon {
+  height: 16px;
+  margin-inline-end: 8px;
+  width: 16px;
+}
+
+.simple-tab-state {
+  color: var(--text-color-deemphasized);
+  font-size: 0.85em;
+  margin-inline: 10px;
+  min-width: 72px;
+}
+
+.simple-tab-row[data-hibernated] .simple-tab-title,
+.simple-tab-row[data-hibernated] .simple-tab-state {
+  color: var(--text-color-deemphasized);
+  opacity: 0.68;
+}
+
+.simple-tab-action {
+  margin: 0;
+  min-width: 88px;
+}
+
 .info-icon,
 .androidIcon,
 .iOSIcon {
