@@ -466,6 +466,8 @@ skip-if = ["true"] # Bug 1616418 Bug 1549985
 ["browser_tabContextMenu_keyboard.js"]
 tags = "vertical-tabs"
 
+["browser_tab_auto_hibernate.js"]
+
 ["browser_tabDrop.js"]
 https_first_disabled = true
 tags = "vertical-tabs"

@@ -71,6 +71,12 @@ document.addEventListener(
         case "context_ToggleStack":
           TabStacks.toggle(TabContextMenu.contextTab);
           break;
+        case "context_neverAutoHibernate":
+          TabContextMenu.setContextTabsAutoDiscardable(false);
+          break;
+        case "context_allowAutoHibernate":
+          TabContextMenu.setContextTabsAutoDiscardable(true);
+          break;
         case "context_duplicateTab":
           duplicateTabIn(TabContextMenu.contextTab, "tab");
           break;

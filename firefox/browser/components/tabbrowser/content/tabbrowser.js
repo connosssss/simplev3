@@ -8938,6 +8938,11 @@ var TabBarVisibility = {
 
 var TabContextMenu = {
   contextTab: null,
+  setContextTabsAutoDiscardable(autoDiscardable) {
+    for (let tab of this.contextTabs) {
+      tab.undiscardable = !autoDiscardable;
+    }
+  },
   _updateToggleMuteMenuItems(aTab, aConditionFn) {
     ["muted", "soundplaying"].forEach(attr => {
       if (!aConditionFn || aConditionFn(attr)) {
@@ -9133,6 +9138,18 @@ var TabContextMenu = {
     } else {
       unloadTabItem.hidden = true;
     }
+
+    let neverAutoHibernateItem = document.getElementById(
+      "context_neverAutoHibernate"
+    );
+    let allowAutoHibernateItem = document.getElementById(
+      "context_allowAutoHibernate"
+    );
+    let allTabsAreProtected = this.contextTabs.every(tab => tab.undiscardable);
+    neverAutoHibernateItem.hidden = allTabsAreProtected;
+    allowAutoHibernateItem.hidden = !allTabsAreProtected;
+    neverAutoHibernateItem.label = this.multiselected? "Never Auto-Hibernate Tabs": "Never Auto-Hibernate";
+    allowAutoHibernateItem.label = this.multiselected? "Allow Auto-Hibernation for Tabs": "Allow Auto-Hibernation";
 
     // Show Play Tab menu item if the tab has attribute activemedia-blocked
     document.getElementById("context_playTab").hidden = !(
