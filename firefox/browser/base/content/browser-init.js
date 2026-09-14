@@ -642,7 +642,9 @@ var TabStacks = {
     button.tab = tab;
     button.setAttribute("draggable", "true");
 
-    button.append(tab.querySelector(".tab-stack").cloneNode(true));
+    let tabStack = tab.querySelector(".tab-stack").cloneNode(true);
+    tabStack.querySelector(".tab-stack-count")?.remove();
+    button.append(tabStack);
     button.addEventListener("mousedown", event => event.stopPropagation());
     button.addEventListener("dblclick", event => {
       event.preventDefault();
