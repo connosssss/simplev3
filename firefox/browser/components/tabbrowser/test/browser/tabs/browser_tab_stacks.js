@@ -160,6 +160,43 @@ add_task(async function test_stack_bar_hides_outside_active_stack() {
   BrowserTestUtils.removeTab(parent);
 });
 
+add_task(async function test_stack_remembers_its_last_selected_tab() {
+  let firstParent = BrowserTestUtils.addTab(gBrowser, "about:blank");
+  let firstChild = BrowserTestUtils.addTab(gBrowser, "about:config");
+  let secondParent = BrowserTestUtils.addTab(gBrowser, "about:robots");
+  let secondChild = BrowserTestUtils.addTab(gBrowser, "about:mozilla");
+  let regularTab = BrowserTestUtils.addTab(gBrowser, "about:license");
+
+  TabStacks.stack(firstChild, firstParent);
+  TabStacks.stack(secondChild, secondParent);
+  gBrowser.selectedTab = firstChild;
+
+  gBrowser.selectedTab = secondParent;
+  Assert.ok(
+    firstChild.hasAttribute("stack-current"),
+    "Switching stacks keeps the last selected tab as the first stack's parent"
+  );
+
+  gBrowser.selectedTab = regularTab;
+  Assert.ok(
+    firstChild.hasAttribute("stack-current"),
+    "Switching to a regular tab keeps the last selected stack tab as parent"
+  );
+
+  gBrowser.selectedTab = firstChild;
+  Assert.equal(
+    gBrowser.selectedTab,
+    firstChild,
+    "Returning to the stack selects the tab that was last active in it"
+  );
+
+  BrowserTestUtils.removeTab(regularTab);
+  BrowserTestUtils.removeTab(secondChild);
+  BrowserTestUtils.removeTab(secondParent);
+  BrowserTestUtils.removeTab(firstChild);
+  BrowserTestUtils.removeTab(firstParent);
+});
+
 add_task(async function test_only_related_tabs_join_active_stack() {
   let pageURL = getRootDirectory(gTestPath).replace(
     "chrome://mochitests/content",

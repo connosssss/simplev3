@@ -20,12 +20,17 @@ var TabStacks = {
     this.SessionStore = ChromeUtils.importESModule(
       "resource:///modules/sessionstore/SessionStore.sys.mjs"
     ).SessionStore;
+    this._lastSelectedTabs = new Map();
 
     this._onTabOpen = event => {
       this.refresh();
     };
     this._onTabClose = () => this.refresh();
     this._onTabSelect = event => {
+      let stackId = this.stackId(event.target);
+      if (stackId) {
+        this._lastSelectedTabs.set(stackId, event.target);
+      }
       if (this._isDraggingTab || this._mouseDownOnTab) {
         return;
       }
@@ -448,18 +453,24 @@ var TabStacks = {
       : [];
   },
 
+  currentStackTab(stack) {
+    return (
+      stack.find(tab => tab.selected) ||
+      stack.find(tab => tab == this._lastSelectedTabs.get(this.stackId(tab))) ||
+      stack[0]
+    );
+  },
+
   isParent(tab) {
     let stack = this.stackTabs(tab);
     if (stack.length < 2) return false;
-    let currentTab = stack.find(t => t.selected) || stack[0];
-    return tab === currentTab;
+    return tab === this.currentStackTab(stack);
   },
 
   isChild(tab) {
     let stack = this.stackTabs(tab);
     if (stack.length < 2) return false;
-    let currentTab = stack.find(t => t.selected) || stack[0];
-    return tab !== currentTab;
+    return tab !== this.currentStackTab(stack);
   },
 
   stack(tab, parent) {
@@ -955,7 +966,7 @@ var TabStacks = {
       }
 
       let collapsed = this.isCollapsed(stack[0]);
-      let currentTab = stack.find(t => t.selected) || stack[0];
+      let currentTab = this.currentStackTab(stack);
       for (let tab of stack) {
         let isCurrent = tab === currentTab;
         tab.toggleAttribute("stack-child", !isCurrent);
