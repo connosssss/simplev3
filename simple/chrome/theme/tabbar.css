@@ -16,6 +16,15 @@
   min-width: 0;
 }
 
+.tab-stack-newtab-button {
+  flex: 0 0 auto;
+  list-style-image: url("chrome://global/skin/icons/plus.svg");
+}
+
+.tab-stack-newtab-button > .toolbarbutton-text {
+  display: none;
+}
+
 .tab-stack-bar-row {
   flex: 1;
   min-height: var(--tabstrip-min-height);

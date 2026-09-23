@@ -444,6 +444,36 @@ var TabStacks = {
     this.setStack(tab, sourceStackId);
     gBrowser.moveTabAfter(tab, lastInStack);
     this.refresh();
+
+    // New tabs receive their visible label, favicon, and close button when
+    // their fade-in attributes are applied after TabOpen.
+    if (!tab.hasAttribute("fadein")) {
+      let observer = new MutationObserver(() => {
+        if (tab.hasAttribute("fadein")) {
+          observer.disconnect();
+          this.refresh();
+        }
+      });
+      observer.observe(tab, { attributes: true, attributeFilter: ["fadein"] });
+    }
+  },
+
+  openTabInActiveStack() {
+    let sourceTab = gBrowser.selectedTab;
+    if (!this.activeStackTabs().length) {
+      return;
+    }
+
+    gBrowser.tabContainer.addEventListener(
+      "TabOpen",
+      event => this.addToSourceStack(event.target, sourceTab),
+      { once: true }
+    );
+    openTrustedLinkIn(BROWSER_NEW_TAB_URL, "tab", {
+      relatedToCurrent: true,
+      inBackground: false,
+    });
+    this.refresh();
   },
 
   stackTabs(tab) {
@@ -808,9 +838,24 @@ var TabStacks = {
     return button;
   },
 
+  createStackBarNewTabButton() {
+    let button = document.createXULElement("toolbarbutton");
+    button.className = "toolbarbutton-1 tab-stack-newtab-button";
+    document.l10n.setAttributes(button, "tabs-toolbar-new-tab");
+    button.addEventListener("click", event => {
+      if (event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      this.openTabInActiveStack();
+    });
+    return button;
+  },
+
   _setupStackBarRowDnd(row) {
     row.addEventListener("dragover", event => {
-      if (event.target.closest(".tab-stack-tab")) {
+      if (event.target.closest(".tab-stack-tab, .tab-stack-newtab-button")) {
         return;
       }
       if (!this.isTabDrag(event)) {
@@ -828,24 +873,25 @@ var TabStacks = {
       event.dataTransfer.dropEffect = "move";
       this._isDraggingTab = true;
 
-      for (let child of row.children) {
+      let tabs = row.querySelectorAll(".tab-stack-tab");
+      for (let child of tabs) {
         child.removeAttribute("stack-drop-before");
         child.removeAttribute("stack-drop-after");
       }
 
-      if (row.lastElementChild) {
-        row.lastElementChild.toggleAttribute("stack-drop-after", true);
+      if (tabs.length) {
+        tabs[tabs.length - 1].toggleAttribute("stack-drop-after", true);
       }
     });
 
     row.addEventListener("dragleave", event => {
-      if (event.target.closest(".tab-stack-tab")) {
+      if (event.target.closest(".tab-stack-tab, .tab-stack-newtab-button")) {
         return;
       }
       let related = event.relatedTarget;
 
       if (!row.contains(related)) {
-        for (let child of row.children) {
+        for (let child of row.querySelectorAll(".tab-stack-tab")) {
           child.removeAttribute("stack-drop-before");
           child.removeAttribute("stack-drop-after");
         }
@@ -853,7 +899,7 @@ var TabStacks = {
     });
 
     row.addEventListener("drop", event => {
-      if (event.target.closest(".tab-stack-tab")) {
+      if (event.target.closest(".tab-stack-tab, .tab-stack-newtab-button")) {
         return;
       }
 
@@ -864,7 +910,7 @@ var TabStacks = {
       event.preventDefault();
       event.stopPropagation();
 
-      for (let child of row.children) {
+      for (let child of row.querySelectorAll(".tab-stack-tab")) {
         child.removeAttribute("stack-drop-before");
         child.removeAttribute("stack-drop-after");
       }
@@ -928,7 +974,10 @@ var TabStacks = {
 
     row.className = "tab-stack-bar-row";
     row.setAttribute("role", "tablist");
-    row.append(...stack.map(tab => this.createStackBarTab(tab)));
+    row.append(
+      ...stack.map(tab => this.createStackBarTab(tab)),
+      this.createStackBarNewTabButton()
+    );
     this._setupStackBarRowDnd(row);
     
     container.replaceChildren(row);

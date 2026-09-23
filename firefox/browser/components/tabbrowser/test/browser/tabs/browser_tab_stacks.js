@@ -117,6 +117,70 @@ add_task(async function test_active_stack_gets_a_stack_bar() {
   BrowserTestUtils.removeTab(parent);
 });
 
+add_task(async function test_stack_bar_new_tab_button_adds_to_active_stack() {
+  let parent = BrowserTestUtils.addTab(gBrowser, "about:blank", {
+    skipAnimation: true,
+  });
+  let child = BrowserTestUtils.addTab(gBrowser, "about:config", {
+    skipAnimation: true,
+  });
+  TabStacks.stack(child, parent);
+  gBrowser.selectedTab = parent;
+
+  let bar = document.getElementById("tab-stack-bars");
+  let container = document.getElementById("tab-stack-bars-container");
+  await TestUtils.waitForCondition(
+    () => !bar.hidden,
+    "The stack bar is visible before opening a tab"
+  );
+
+  let button = container.querySelector(".tab-stack-newtab-button");
+  is(
+    button,
+    container.lastElementChild.lastElementChild,
+    "The button follows the stack tabs"
+  );
+
+  let nativeButton = document.getElementById("tabs-newtab-button");
+  let newTabPromise = BrowserTestUtils
+    .waitForEvent(gBrowser.tabContainer, "TabOpen")
+    .then(event => event.target);
+  EventUtils.synthesizeMouseAtCenter(nativeButton, {}, window);
+  let newTab = await newTabPromise;
+
+  await TestUtils.waitForCondition(
+    () => container.querySelectorAll(".tab-stack-tab").length == 3,
+    "The new tab is immediately rendered in the stack bar"
+  );
+  await TestUtils.waitForCondition(
+    () => {
+      let stackTab = container.querySelectorAll(".tab-stack-tab")[2];
+      return (
+        stackTab.getAttribute("label") == newTab.label &&
+        stackTab.querySelector(".tab-label").textContent == newTab.label &&
+        stackTab.querySelector(".tab-icon-image").hasAttribute("fadein") &&
+        stackTab.querySelector(".tab-close-button").hasAttribute("fadein")
+      );
+    },
+    "The new tab's label, favicon, and close button render after its fade-in"
+  );
+  is(
+    TabStacks.stackId(newTab),
+    TabStacks.stackId(parent),
+    "The new tab joins the active stack"
+  );
+  is(gBrowser.selectedTab, newTab, "The new tab is selected");
+  is(
+    TabStacks.stackTabs(parent).at(-1),
+    newTab,
+    "The new tab is appended to the stack"
+  );
+
+  BrowserTestUtils.removeTab(newTab);
+  BrowserTestUtils.removeTab(child);
+  BrowserTestUtils.removeTab(parent);
+});
+
 add_task(async function test_stack_bar_hides_outside_active_stack() {
   let parent = BrowserTestUtils.addTab(gBrowser, "about:blank", {
     skipAnimation: true,

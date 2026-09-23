@@ -22,7 +22,11 @@ document.addEventListener(
             BrowserCommands.handleShiftBackspace();
             break;
           case "cmd_newNavigatorTab":
-            BrowserCommands.openTab({ event });
+            if (window.TabStacks?.activeStackTabs().length) {
+              window.TabStacks.openTabInActiveStack();
+            } else {
+              BrowserCommands.openTab({ event });
+            }
             break;
           case "cmd_newNavigatorTabNoEvent":
             BrowserCommands.openTab();
