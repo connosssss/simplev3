@@ -445,8 +445,6 @@ var TabStacks = {
     gBrowser.moveTabAfter(tab, lastInStack);
     this.refresh();
 
-    // New tabs receive their visible label, favicon, and close button when
-    // their fade-in attributes are applied after TabOpen.
     if (!tab.hasAttribute("fadein")) {
       let observer = new MutationObserver(() => {
         if (tab.hasAttribute("fadein")) {
