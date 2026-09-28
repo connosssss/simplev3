@@ -1496,7 +1496,9 @@ var gBrowserInit = {
     const updateToolbarOpacity = () => {
       const val = Services.prefs.getIntPref("simple.theme.transparent-toolbar.opacity", 55);
       document.documentElement.style.setProperty("--simple-toolbar-opacity", val + "%");
+      document.documentElement.style.setProperty("--toolbar-opacity", val + "%");
       document.documentElement.style.setProperty("--simple-urlbar-opacity", Math.min(100, val + 15) + "%");
+      document.documentElement.style.setProperty("--urlbar-opacity", Math.min(100, val + 15) + "%");
     };
 
     
