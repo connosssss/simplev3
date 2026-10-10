@@ -23,6 +23,10 @@ var TabStacks = {
     this._lastSelectedTabs = new Map();
 
     this._onTabOpen = event => {
+      let sourceTab = event.target.openerTab;
+      if (sourceTab) {
+        this.addToSourceStack(event.target, sourceTab);
+      }
       this.refresh();
     };
     this._onTabClose = () => this.refresh();
@@ -441,9 +445,11 @@ var TabStacks = {
     }
 
     let lastInStack = this.stackTabs(sourceTab).at(-1);
+    if (!lastInStack) {
+      return;
+    }
     this.setStack(tab, sourceStackId);
     gBrowser.moveTabAfter(tab, lastInStack);
-    this.refresh();
 
     if (!tab.hasAttribute("fadein")) {
       let observer = new MutationObserver(() => {
@@ -457,21 +463,14 @@ var TabStacks = {
   },
 
   openTabInActiveStack() {
-    let sourceTab = gBrowser.selectedTab;
     if (!this.activeStackTabs().length) {
       return;
     }
 
-    gBrowser.tabContainer.addEventListener(
-      "TabOpen",
-      event => this.addToSourceStack(event.target, sourceTab),
-      { once: true }
-    );
     openTrustedLinkIn(BROWSER_NEW_TAB_URL, "tab", {
       relatedToCurrent: true,
       inBackground: false,
     });
-    this.refresh();
   },
 
   stackTabs(tab) {

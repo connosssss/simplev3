@@ -321,6 +321,46 @@ add_task(async function test_only_related_tabs_join_active_stack() {
   BrowserTestUtils.removeTab(parent);
 });
 
+add_task(async function test_script_opened_tabs_join_source_stack() {
+  let parent = await BrowserTestUtils.openNewForegroundTab(
+    gBrowser,
+    "data:text/html," +
+      [
+        '<a id="scripted-link" href="about:blank"',
+        'onclick="event.preventDefault(); window.open(\'about:blank\', \'_blank\');">',
+        "Open</a>",
+      ].join(" ")
+  );
+  let child = BrowserTestUtils.addTab(gBrowser, "about:config");
+  TabStacks.stack(child, parent);
+
+  try {
+    gBrowser.selectedTab = parent;
+    let newTabPromise = BrowserTestUtils.waitForNewTab(
+      gBrowser,
+      "about:blank",
+      true
+    );
+    await BrowserTestUtils.synthesizeMouseAtCenter(
+      "#scripted-link",
+      { ctrlKey: true },
+      parent.linkedBrowser
+    );
+    let newTab = await newTabPromise;
+
+    is(newTab.openerTab, parent, "The scripted tab keeps its source tab");
+    is(
+      TabStacks.stackId(newTab),
+      TabStacks.stackId(parent),
+      "A scripted Ctrl-clicked link joins its source stack"
+    );
+    BrowserTestUtils.removeTab(newTab);
+  } finally {
+    BrowserTestUtils.removeTab(child);
+    BrowserTestUtils.removeTab(parent);
+  }
+});
+
 add_task(async function test_drag_tab_from_regular_tabbar_into_stack_tabbar() {
   let parent = BrowserTestUtils.addTab(gBrowser, "about:blank", {
     skipAnimation: true,
