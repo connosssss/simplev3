@@ -1,0 +1,5 @@
+# Point to the accessible mozbuild state directory with pre-installed toolchains
+export MOZBUILD_STATE_PATH="C:/Users/conno/.mozbuild_clean"
+
+# Use existing toolchains without trying to update/download new ones
+ac_add_options --enable-bootstrap=no-update

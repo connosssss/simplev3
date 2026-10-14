@@ -1,0 +1,3116 @@
+diff --git a/firefox/browser/app/profile/firefox.js b/firefox/browser/app/profile/firefox.js
+index 9ffcb37061..0c8ee890a5 100644
+--- a/firefox/browser/app/profile/firefox.js
++++ b/firefox/browser/app/profile/firefox.js
+@@ -26,6 +26,13 @@
+ // Set add-ons abuse report related prefs specific to Firefox Desktop.
+ pref("extensions.abuseReport.enabled", true);
+ 
++pref("simple.theme.transparent-toolbar", false);
++pref("simple.theme.transparent-toolbar.opacity", 55);
++pref("simple.tabs.hibernate.enabled", true);
++pref("simple.tabs.hibernate.timeout_minutes", 30);
++pref("widget.windows.mica", true);
++pref("widget.windows.mica.toplevel-backdrop", 2);
++
+ // Enables some extra Extension System Logging (can reduce performance)
+ pref("extensions.logging.enabled", false);
+ 
+@@ -315,7 +322,7 @@ pref("browser.shell.setDefaultGuidanceNotifications", true);
+ 
+ // 0 = blank, 1 = home (browser.startup.homepage), 2 = last visited page, 3 = resume previous browser session
+ // The behavior of option 3 is detailed at: http://wiki.mozilla.org/Session_Restore
+-pref("browser.startup.page",                1);
++pref("browser.startup.page",                3);
+ pref("browser.startup.homepage",            "about:home");
+ pref("browser.startup.homepage.abouthome_cache.enabled", true);
+ pref("browser.startup.homepage.abouthome_cache.loglevel", "Warn");
+@@ -3407,3 +3414,6 @@ pref("browser.ipProtection.enabled", false);
+ pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);
+ pref("svg.context-properties.content.enabled", true);
+ pref("layout.css.has-selector.enabled", true);
++
++pref("simple.theme.transparent-toolbar", false);
++pref("simple.theme.transparent-toolbar.opacity", 55);
+diff --git a/firefox/browser/base/content/browser-init.js b/firefox/browser/base/content/browser-init.js
+index c32b781be0..fe0ab33cb5 100644
+--- a/firefox/browser/base/content/browser-init.js
++++ b/firefox/browser/base/content/browser-init.js
+@@ -8,6 +8,1035 @@ var delayedStartupPromise = new Promise(resolve => {
+   _resolveDelayedStartup = resolve;
+ });
+ 
++var TabStacks = {
++  STACK_KEY: "tab-stack",
++  COLLAPSED_KEY: "tab-stack.collapsed",
++
++  init() {
++    if (this._initialized) {
++      return;
++    }
++    this._initialized = true;
++    this.SessionStore = ChromeUtils.importESModule(
++      "resource:///modules/sessionstore/SessionStore.sys.mjs"
++    ).SessionStore;
++    this._lastSelectedTabs = new Map();
++
++    this._onTabOpen = event => {
++      let sourceTab = event.target.openerTab;
++      if (sourceTab) {
++        this.addToSourceStack(event.target, sourceTab);
++      }
++      this.refresh();
++    };
++    this._onTabClose = () => this.refresh();
++    this._onTabSelect = event => {
++      let stackId = this.stackId(event.target);
++      if (stackId) {
++        this._lastSelectedTabs.set(stackId, event.target);
++      }
++      if (this._isDraggingTab || this._mouseDownOnTab) {
++        return;
++      }
++      this.expandStack(event.target);
++      this.refresh();
++    };
++    this._onTabAttrModified = () => {
++      if (this._isDraggingTab || this._mouseDownOnTab) {
++        return;
++      }
++      this.renderStackBars();
++    };
++    // Main tab-bar drags keep a stack together; the stack bar can pull out one tab.
++    this._onTabMove = () => this.refresh();
++    this._onPopupShowing = event => {
++      if (event.target == this.menu) {
++        this.updateMenu();
++      }
++    };
++
++    this._onTabMouseDown = event => {
++
++      if (event.button !== 0) {
++        return;
++      }
++
++      let tab = event.target.closest("tab, .tabbrowser-tab");
++      if (tab) {
++        this._mouseDownOnTab = true;
++      }
++    };
++
++    this._onTabMouseUp = () => {
++      if (this._mouseDownOnTab) {
++        this._mouseDownOnTab = false;
++        this.expandStack(gBrowser.selectedTab);
++        this.refresh();
++      }
++    };
++
++    this._onDragStart = event => {
++      this._mouseDownOnTab = false;
++      let target = event.target;
++      let tab = target?.closest?.("tab, .tabbrowser-tab");
++      let stackTab = target?.closest?.(".tab-stack-tab");
++
++      if (this._draggedStackTab || tab || stackTab) {
++        this._isDraggingTab = true;
++      }
++
++      if (tab && !stackTab) {
++        this._draggedExternalTab = tab;
++      }
++    };
++
++    this._onDragEnd = () => {
++      this._isDraggingTab = false;
++      this._mouseDownOnTab = false;
++      this._draggedStackTab = null;
++      this._draggedExternalTab = null;
++      this._draggedButton = null;
++      this._clearTabStripDropIndicator();
++
++      let row = document.querySelector(".tab-stack-bar-row");
++      if (row) {
++        for (let child of row.children) {
++          child.removeAttribute("stack-drop-before");
++          child.removeAttribute("stack-drop-after");
++          child.removeAttribute("stack-dragging");
++        }
++      }
++
++      this.refresh();
++    };
++
++    this._onTabStripDragOver = event => {
++      if (!this.isTabDrag(event)) {
++        return;
++      }
++
++      let draggedTab = this.getDraggedTab(event);
++      let targetTab = event.target.closest("tab, .tabbrowser-tab");
++      if (draggedTab) {
++        if (
++          !this._draggedStackTab &&
++          !this.stackId(draggedTab) &&
++          !(targetTab && this.stackId(targetTab))
++        ) {
++          return;
++        }
++      } 
++      else if (!this._draggedStackTab) {
++        return;
++      }
++
++
++      event.preventDefault();
++      event.stopPropagation();
++      event.dataTransfer.dropEffect = "move";
++      this._updateTabStripDropIndicator(event);
++    };
++
++    this._onTabStripDragLeave = event => {
++      if (event.relatedTarget && !gBrowser.tabContainer.contains(event.relatedTarget)) {
++        this._clearTabStripDropIndicator();
++      }
++    };
++
++    this._onTabStripDrop = event => {
++      if (!this.isTabDrag(event)) {
++        return;
++      }
++
++      let draggedTab = this.getDraggedTab(event);
++      let targetTab = event.target.closest("tab, .tabbrowser-tab");
++      if (!targetTab) {
++        targetTab = gBrowser.visibleTabs.at(-1);
++      }
++      if (
++        !draggedTab ||
++        (!this._draggedStackTab &&
++          !this.stackId(draggedTab) &&
++          !(targetTab && this.stackId(targetTab)))
++      ) {
++        return;
++      }
++
++      event.preventDefault();
++      event.stopPropagation();
++      this._clearTabStripDropIndicator();
++
++      let isVertical = gBrowser.tabContainer.getAttribute("orient") == "vertical";
++      let dropBefore = false;
++
++      if (targetTab && targetTab !== draggedTab) {
++        let tabRect = targetTab.getBoundingClientRect();
++        dropBefore = isVertical
++          ? event.clientY < tabRect.top + tabRect.height / 2
++          : event.clientX < tabRect.left + tabRect.width / 2;
++      }
++
++      if (!this._draggedStackTab && this.stackId(draggedTab)) {
++        this.moveStack(draggedTab, targetTab, dropBefore);
++      } else {
++        this.setStack(draggedTab, "");
++        this.SessionStore.deleteCustomTabValue(draggedTab, this.COLLAPSED_KEY);
++
++        if (targetTab && targetTab !== draggedTab) {
++          let targetTabs = this.stackTabs(targetTab);
++          targetTab = targetTabs.length
++            ? targetTabs[dropBefore ? 0 : targetTabs.length - 1]
++            : targetTab;
++          if (dropBefore) {
++            gBrowser.moveTabBefore(draggedTab, targetTab);
++          }
++          else {
++            gBrowser.moveTabAfter(draggedTab, targetTab);
++          }
++        }
++      }
++
++      this._draggedStackTab = null;
++      this._draggedExternalTab = null;
++      this._draggedButton = null;
++      this._isDraggingTab = false;
++      this._mouseDownOnTab = false;
++      this.refresh();
++    };
++    gBrowser.tabContainer.addEventListener("TabOpen", this._onTabOpen);
++    gBrowser.tabContainer.addEventListener("TabClose", this._onTabClose);
++    gBrowser.tabContainer.addEventListener("TabSelect", this._onTabSelect);
++    gBrowser.tabContainer.addEventListener("TabMove", this._onTabMove);
++    gBrowser.tabContainer.addEventListener(
++      "TabAttrModified",
++      this._onTabAttrModified
++    );
++    gBrowser.tabContainer.addEventListener(
++      "mousedown",
++      this._onTabMouseDown,
++      true
++    );
++    gBrowser.tabContainer.addEventListener(
++      "dragover",
++      this._onTabStripDragOver,
++      true
++    );
++    gBrowser.tabContainer.addEventListener(
++      "dragleave",
++      this._onTabStripDragLeave,
++      true
++    );
++    gBrowser.tabContainer.addEventListener(
++      "drop",
++      this._onTabStripDrop,
++      true
++    );
++    window.addEventListener("mouseup", this._onTabMouseUp, true);
++    window.addEventListener("dragstart", this._onDragStart, true);
++    window.addEventListener("dragend", this._onDragEnd, true);
++    this.menu = document.getElementById("tabContextMenu");
++    this.menu.addEventListener("popupshowing", this._onPopupShowing);
++    this.refresh();
++  },
++
++  uninit() {
++    if (!this._initialized) {
++      return;
++    }
++    gBrowser.tabContainer.removeEventListener("TabOpen", this._onTabOpen);
++    gBrowser.tabContainer.removeEventListener("TabClose", this._onTabClose);
++    gBrowser.tabContainer.removeEventListener("TabSelect", this._onTabSelect);
++    gBrowser.tabContainer.removeEventListener("TabMove", this._onTabMove);
++    gBrowser.tabContainer.removeEventListener(
++      "TabAttrModified",
++      this._onTabAttrModified
++    );
++    gBrowser.tabContainer.removeEventListener(
++      "mousedown",
++      this._onTabMouseDown,
++      true
++    );
++    gBrowser.tabContainer.removeEventListener(
++      "dragover",
++      this._onTabStripDragOver,
++      true
++    );
++    gBrowser.tabContainer.removeEventListener(
++      "dragleave",
++      this._onTabStripDragLeave,
++      true
++    );
++    gBrowser.tabContainer.removeEventListener(
++      "drop",
++      this._onTabStripDrop,
++      true
++    );
++    window.removeEventListener("mouseup", this._onTabMouseUp, true);
++    window.removeEventListener("dragstart", this._onDragStart, true);
++    window.removeEventListener("dragend", this._onDragEnd, true);
++    this.menu.removeEventListener("popupshowing", this._onPopupShowing);
++    this._initialized = false;
++  },
++
++  _clearTabStripDropIndicator() {
++    let ind = gBrowser.tabContainer._tabDropIndicator;
++    if (ind) {
++      ind.hidden = true;
++    }
++  },
++
++  _updateTabStripDropIndicator(event) {
++    let ind = gBrowser.tabContainer._tabDropIndicator;
++
++    if (!ind) {
++      return;
++    }
++
++    let arrowScrollbox = gBrowser.tabContainer.arrowScrollbox;
++
++    if (!arrowScrollbox) {
++      return;
++    }
++
++    let isVertical = gBrowser.tabContainer.getAttribute("orient") == "vertical";
++    let rect = arrowScrollbox.getBoundingClientRect();
++    let targetTab = event.target.closest("tab, .tabbrowser-tab");
++    let newMargin = 0;
++
++    if (targetTab) {
++      let tabRect = targetTab.getBoundingClientRect();
++
++      if (isVertical) {
++        let dropBefore = event.clientY < tabRect.top + tabRect.height / 2;
++        newMargin = (dropBefore ? tabRect.top : tabRect.bottom) - rect.top;
++      } 
++      else {
++        let dropBefore = event.clientX < tabRect.left + tabRect.width / 2;
++        newMargin = (dropBefore ? tabRect.left : tabRect.right) - rect.left;
++      }
++
++    } 
++    
++    else {
++      let lastTab = gBrowser.visibleTabs.at(-1);
++      if (lastTab) {
++        let lastRect = lastTab.getBoundingClientRect();
++        newMargin = isVertical
++          ? lastRect.bottom - rect.top
++          : lastRect.right - rect.left;
++      }
++    }
++
++    ind.hidden = false;
++    ind.style.transform = isVertical ? "translateY(" + Math.round(newMargin) + "px)" : "translateX(" + Math.round(newMargin) + "px)";
++  },
++
++  activeStackTabs() {
++    let selectedStack = this.stackTabs(gBrowser.selectedTab);
++    if (selectedStack.length >= 2 && !this.isCollapsed(selectedStack[0])) {
++      return selectedStack;
++    }
++    return [];
++  },
++
++  isTabDrag(event) {
++    if (this._draggedStackTab || this._draggedExternalTab) {
++      return true;
++    }
++
++    let dt = event?.dataTransfer;
++    if (!dt) {
++      return false;
++    }
++
++    const TAB_DROP_TYPE = "application/x-moz-tabbrowser-tab";
++    if (dt.types) {
++
++      if (
++        typeof dt.types.includes === "function" &&
++        dt.types.includes(TAB_DROP_TYPE)
++      ) {
++        return true;
++      }
++
++      if (
++        typeof dt.types.contains === "function" &&
++        dt.types.contains(TAB_DROP_TYPE)
++      ) {
++        return true;
++      }
++
++    }
++
++
++    try {
++      if (dt.mozItemCount > 0) {
++        let types = dt.mozTypesAt(0);
++        if (
++          types &&
++          (types.contains?.(TAB_DROP_TYPE) || types.includes?.(TAB_DROP_TYPE))
++        ) {
++          return true;
++        }
++      }
++    } 
++    catch (e) {}
++    return false;
++  },
++
++  getDraggedTab(event) {
++    if (this._draggedStackTab) {
++      return this._draggedStackTab;
++    }
++
++    if (this._draggedExternalTab) {
++      return this._draggedExternalTab;
++    }
++
++    let dt = event?.dataTransfer;
++    if (!dt) {
++      return null;
++    }
++
++    const TAB_DROP_TYPE = "application/x-moz-tabbrowser-tab";
++    try {
++      let tab = dt.mozGetDataAt(TAB_DROP_TYPE, 0);
++      if (tab) {
++        return tab;
++      }
++    } 
++    catch (e) {}
++
++    try {
++      if (dt.mozItemCount > 0) {
++        let tab = dt.mozGetDataAt(TAB_DROP_TYPE, 0);
++        if (tab) {
++          return tab;
++        }
++      }
++    } 
++    catch (e) {}
++    return null;
++  },
++
++  tabs() {
++    return [...gBrowser.tabs].filter(tab => !tab.closing);
++  },
++
++  stackId(tab) {
++    return this.SessionStore.getCustomTabValue(tab, this.STACK_KEY);
++  },
++
++  setStack(tab, stackId) {
++    
++    if (stackId) {
++      this.SessionStore.setCustomTabValue(tab, this.STACK_KEY, stackId);
++    } 
++    
++    else {
++      this.SessionStore.deleteCustomTabValue(tab, this.STACK_KEY);
++    }
++  },
++
++  addToSourceStack(tab, sourceTab) {
++    let sourceStackId = this.stackId(sourceTab);
++    if (!sourceStackId || this.stackId(tab) || tab.pinned || tab == sourceTab) {
++      return;
++    }
++
++    let lastInStack = this.stackTabs(sourceTab).at(-1);
++    if (!lastInStack) {
++      return;
++    }
++    this.setStack(tab, sourceStackId);
++    gBrowser.moveTabAfter(tab, lastInStack);
++
++    if (!tab.hasAttribute("fadein")) {
++      let observer = new MutationObserver(() => {
++        if (tab.hasAttribute("fadein")) {
++          observer.disconnect();
++          this.refresh();
++        }
++      });
++      observer.observe(tab, { attributes: true, attributeFilter: ["fadein"] });
++    }
++  },
++
++  openTabInActiveStack() {
++    if (!this.activeStackTabs().length) {
++      return;
++    }
++
++    openTrustedLinkIn(BROWSER_NEW_TAB_URL, "tab", {
++      relatedToCurrent: true,
++      inBackground: false,
++    });
++  },
++
++  stackTabs(tab) {
++    let stackId = this.stackId(tab);
++    return stackId
++      ? this.tabs().filter(candidate => this.stackId(candidate) == stackId)
++      : [];
++  },
++
++  currentStackTab(stack) {
++    return (
++      stack.find(tab => tab.selected) ||
++      stack.find(tab => tab == this._lastSelectedTabs.get(this.stackId(tab))) ||
++      stack[0]
++    );
++  },
++
++  isParent(tab) {
++    let stack = this.stackTabs(tab);
++    if (stack.length < 2) return false;
++    return tab === this.currentStackTab(stack);
++  },
++
++  isChild(tab) {
++    let stack = this.stackTabs(tab);
++    if (stack.length < 2) return false;
++    return tab !== this.currentStackTab(stack);
++  },
++
++  stack(tab, parent) {
++    if (
++      !tab ||
++      !parent ||
++      tab == parent ||
++      tab.pinned ||
++      parent.pinned
++    ) {
++      return;
++    }
++
++    let tabStackId = this.stackId(tab);
++    let parentStackId = this.stackId(parent);
++
++    if (tabStackId && tabStackId == parentStackId) {
++      return;
++    }
++
++    let movingTabs = this.stackTabs(tab);
++
++    if (!movingTabs.length) {
++      movingTabs = [tab];
++    }
++    let targetTabs = this.stackTabs(parent);
++
++    if (!targetTabs.length) {
++      targetTabs = [parent];
++    }
++
++    let stackId = parentStackId || Services.uuid.generateUUID().toString();
++
++
++    for (let stackTab of targetTabs) {
++      this.setStack(stackTab, stackId);
++    }
++
++    for (let movingTab of movingTabs) {
++      this.setStack(movingTab, stackId);
++    }
++
++
++    gBrowser.moveTabsAfter(movingTabs, targetTabs.at(-1));
++    this.refresh();
++  },
++
++  unstack(tab) {
++    if (!this.isChild(tab)) {
++      return;
++    }
++    this.setStack(tab, "");
++    this.SessionStore.deleteCustomTabValue(tab, this.COLLAPSED_KEY);
++    this.refresh();
++  },
++
++  isCollapsed(tab) {
++    return (
++      this.SessionStore.getCustomTabValue(tab, this.COLLAPSED_KEY) == "true"
++    );
++  },
++
++  toggle(tab) {
++    let stack = this.stackTabs(tab);
++
++    if (!this.isParent(tab)) {
++      return;
++    }
++
++
++    let collapsed = !this.isCollapsed(tab);
++
++    if (collapsed && stack.includes(gBrowser.selectedTab) && tab != gBrowser.selectedTab) {
++      gBrowser.selectedTab = tab;
++    }
++
++    for (let stackTab of stack) {
++      if (collapsed) {
++        this.SessionStore.setCustomTabValue(stackTab, this.COLLAPSED_KEY, "true");
++      } 
++      else {
++        this.SessionStore.deleteCustomTabValue(stackTab, this.COLLAPSED_KEY);
++      }
++    }
++    this.refresh();
++  },
++
++  expandStack(tab) {
++    let stack = this.stackTabs(tab);
++    if (stack.length && this.isCollapsed(stack[0])) {
++      for (let stackTab of stack) {
++        this.SessionStore.deleteCustomTabValue(stackTab, this.COLLAPSED_KEY);
++      }
++    }
++  },
++
++  /**
++   * Move a tab within its stack to a new position relative to a target tab.
++   * @param {MozTabbrowserTab} tab - The tab to move.
++   * @param {MozTabbrowserTab} targetTab - The tab to position relative to.
++   * @param {boolean} before - If true, place before targetTab; otherwise after.
++   */
++  moveInStack(tab, targetTab, before = false) {
++    if (!tab || !targetTab || tab === targetTab) {
++      return;
++    }
++    let tabStackId = this.stackId(tab);
++    let targetStackId = this.stackId(targetTab);
++    if (!tabStackId || tabStackId !== targetStackId) {
++      return;
++    }
++    if (before) {
++      gBrowser.moveTabBefore(tab, targetTab);
++    } else {
++      gBrowser.moveTabAfter(tab, targetTab);
++    }
++    this.refresh();
++  },
++
++  moveStack(tab, targetTab, before = false) {
++    let movingTabs = this.stackTabs(tab);
++    if (!movingTabs.length || !targetTab || movingTabs.includes(targetTab)) {
++      return;
++    }
++
++    let targetTabs = this.stackTabs(targetTab);
++    targetTab = targetTabs.length ? targetTabs[before ? 0 : targetTabs.length - 1] : targetTab;
++
++    if (before) {
++      gBrowser.moveTabsBefore(movingTabs, targetTab);
++    } else {
++      gBrowser.moveTabsAfter(movingTabs, targetTab);
++    }
++  },
++
++  updateMenu() {
++    let tab = TabContextMenu.contextTab;
++    let parent = gBrowser.selectedTab;
++    let tabStackId = tab && this.stackId(tab);
++    let parentStackId = parent && this.stackId(parent);
++
++    let canStack =
++      tab &&
++      parent &&
++      !TabContextMenu.multiselected &&
++      tab != parent &&
++      !tab.pinned &&
++      !parent.pinned &&
++      (!tabStackId || tabStackId != parentStackId);
++
++
++    let stack = document.getElementById("context_StackUnderActive");
++    let unstack = document.getElementById("context_Unstack");
++    let toggle = document.getElementById("context_ToggleStack");
++    let separator = document.getElementById("context_StackSeparator");
++
++    stack.hidden = !canStack;
++    unstack.hidden = !this.isChild(tab) || TabContextMenu.multiselected;
++    toggle.hidden = !this.isParent(tab);
++    toggle.label = this.isCollapsed(tab)
++      ? "Expand Tab Stack"
++      : "Collapse Tab Stack";
++    separator.hidden = stack.hidden && unstack.hidden && toggle.hidden;
++  },
++
++  createStackBarTab(tab) {
++    let button = document.createXULElement("toolbarbutton");
++    button.className = "toolbarbutton-1 tabbrowser-tab tab-stack-tab";
++    button.setAttribute("context", "tabContextMenu");
++    button.setAttribute("role", "tab");
++    button.setAttribute("label", tab.label);
++    button.setAttribute("tooltiptext", tab.label);
++    button.setAttribute("fadein", "");
++    button.setAttribute("aria-selected", tab.selected);
++    button.toggleAttribute("selected", tab.selected);
++    button.toggleAttribute(
++      "visuallyselected",
++      tab.hasAttribute("visuallyselected")
++    );
++    button.tab = tab;
++    button.setAttribute("draggable", "true");
++
++    let tabStack = tab.querySelector(".tab-stack").cloneNode(true);
++    tabStack.querySelector(".tab-stack-count")?.remove();
++    button.append(tabStack);
++    button.addEventListener("mousedown", event => event.stopPropagation());
++    button.addEventListener("dblclick", event => {
++      event.preventDefault();
++      event.stopPropagation();
++    });
++
++    button.addEventListener("click", event => {
++      event.stopPropagation();
++
++      if (event.target.closest(".tab-close-button")) {
++        button._closeRequested = true;
++        gBrowser.removeTab(tab);
++      }
++    });
++
++    button.addEventListener("command", event => {
++      event.stopPropagation();
++      if (!button._closeRequested && !tab.closing) {
++        gBrowser.selectedTab = tab;
++      }
++    });
++
++    // reordering within the stack bar or dragging from regular tab bar
++    button.addEventListener("dragstart", event => {
++      event.stopPropagation();
++      this._draggedStackTab = tab;
++      this._draggedButton = button;
++      this._isDraggingTab = true;
++      button.toggleAttribute("stack-dragging", true);
++      event.dataTransfer.effectAllowed = "move";
++      event.dataTransfer.setData("text/x-tab-stack-drag", "true");
++      try {
++        event.dataTransfer.mozSetDataAt(
++          "application/x-moz-tabbrowser-tab",
++          tab,
++          0
++        );
++        event.dataTransfer.mozSetDataAt(
++          "text/x-moz-text-internal",
++          tab.linkedBrowser?.currentURI?.spec || "",
++          0
++        );
++      } 
++      catch (e) {}
++    });
++
++    button.addEventListener("dragover", event => {
++      if (!this.isTabDrag(event)) {
++        return;
++      }
++      let draggedTab = this.getDraggedTab(event);
++      if (draggedTab) {
++        if ( draggedTab === tab || draggedTab.pinned || draggedTab.closing) {
++          return;
++        }
++      }
++      event.preventDefault();
++      event.stopPropagation();
++      event.dataTransfer.dropEffect = "move";
++      this._isDraggingTab = true;
++
++      let rect = button.getBoundingClientRect();
++      let midX = rect.left + rect.width / 2;
++      let dropBefore = event.clientX < midX;
++
++      let row = button.closest(".tab-stack-bar-row");
++      if (row) {
++        for (let child of row.children) {
++          child.removeAttribute("stack-drop-before");
++          child.removeAttribute("stack-drop-after");
++        }
++      }
++
++      button.toggleAttribute("stack-drop-before", dropBefore);
++      button.toggleAttribute("stack-drop-after", !dropBefore);
++    });
++
++    button.addEventListener("dragleave", event => {
++      event.stopPropagation();
++      button.removeAttribute("stack-drop-before");
++      button.removeAttribute("stack-drop-after");
++    });
++
++    button.addEventListener("drop", event => {
++      let draggedTab = this.getDraggedTab(event);
++      if ( !draggedTab || draggedTab === tab || draggedTab.pinned || draggedTab.closing ) {
++        return;
++      }
++      event.preventDefault();
++      event.stopPropagation();
++
++      let rect = button.getBoundingClientRect();
++      let midX = rect.left + rect.width / 2;
++      let dropBefore = event.clientX < midX;
++
++      button.removeAttribute("stack-drop-before");
++      button.removeAttribute("stack-drop-after");
++
++      if (this.stackId(draggedTab) === this.stackId(tab)) {
++        this.moveInStack(draggedTab, tab, dropBefore);
++      } 
++      else {
++        let targetStackId = this.stackId(tab);
++        let movingTabs = this.stackTabs(draggedTab);
++        if (!movingTabs.length) {
++          movingTabs = [draggedTab];
++        }
++
++        for (let movingTab of movingTabs) {
++          this.setStack(movingTab, targetStackId);
++        }
++
++        if (dropBefore) {
++          gBrowser.moveTabsBefore(movingTabs, tab);
++        } 
++        else {
++          gBrowser.moveTabsAfter(movingTabs, tab);
++        }
++
++        this.refresh();
++      }
++
++      this._draggedStackTab = null;
++      this._draggedExternalTab = null;
++      this._draggedButton = null;
++      this._isDraggingTab = false;
++      this._mouseDownOnTab = false;
++    });
++
++    button.addEventListener("dragend", event => {
++      event.stopPropagation();
++      button.removeAttribute("stack-dragging");
++      // clear remaining indicators if any
++      let row = button.closest(".tab-stack-bar-row");
++      if (row) {
++        for (let child of row.children) {
++          child.removeAttribute("stack-drop-before");
++          child.removeAttribute("stack-drop-after");
++          child.removeAttribute("stack-dragging");
++        }
++      }
++      this._draggedStackTab = null;
++      this._draggedExternalTab = null;
++      this._draggedButton = null;
++      this._isDraggingTab = false;
++      this._mouseDownOnTab = false;
++      this.refresh();
++    });
++
++    return button;
++  },
++
++  createStackBarNewTabButton() {
++    let button = document.createXULElement("toolbarbutton");
++    button.className = "toolbarbutton-1 tab-stack-newtab-button";
++    document.l10n.setAttributes(button, "tabs-toolbar-new-tab");
++    button.addEventListener("click", event => {
++      if (event.button !== 0) {
++        return;
++      }
++      event.preventDefault();
++      event.stopPropagation();
++      this.openTabInActiveStack();
++    });
++    return button;
++  },
++
++  _setupStackBarRowDnd(row) {
++    row.addEventListener("dragover", event => {
++      if (event.target.closest(".tab-stack-tab, .tab-stack-newtab-button")) {
++        return;
++      }
++      if (!this.isTabDrag(event)) {
++        return;
++      }
++
++      let draggedTab = this.getDraggedTab(event);
++      if (draggedTab) {
++        if (draggedTab.pinned || draggedTab.closing) {
++          return;
++        }
++      }
++      event.preventDefault();
++      event.stopPropagation();
++      event.dataTransfer.dropEffect = "move";
++      this._isDraggingTab = true;
++
++      let tabs = row.querySelectorAll(".tab-stack-tab");
++      for (let child of tabs) {
++        child.removeAttribute("stack-drop-before");
++        child.removeAttribute("stack-drop-after");
++      }
++
++      if (tabs.length) {
++        tabs[tabs.length - 1].toggleAttribute("stack-drop-after", true);
++      }
++    });
++
++    row.addEventListener("dragleave", event => {
++      if (event.target.closest(".tab-stack-tab, .tab-stack-newtab-button")) {
++        return;
++      }
++      let related = event.relatedTarget;
++
++      if (!row.contains(related)) {
++        for (let child of row.querySelectorAll(".tab-stack-tab")) {
++          child.removeAttribute("stack-drop-before");
++          child.removeAttribute("stack-drop-after");
++        }
++      }
++    });
++
++    row.addEventListener("drop", event => {
++      if (event.target.closest(".tab-stack-tab, .tab-stack-newtab-button")) {
++        return;
++      }
++
++      let draggedTab = this.getDraggedTab(event);
++      if (!draggedTab || draggedTab.pinned || draggedTab.closing) {
++        return;
++      }
++      event.preventDefault();
++      event.stopPropagation();
++
++      for (let child of row.querySelectorAll(".tab-stack-tab")) {
++        child.removeAttribute("stack-drop-before");
++        child.removeAttribute("stack-drop-after");
++      }
++
++      let activeStack = this.activeStackTabs();
++      if (!activeStack.length) {
++        return;
++      }
++
++      let targetStackId = this.stackId(activeStack[0]);
++      let lastTab = activeStack.at(-1);
++
++      if (this.stackId(draggedTab) === targetStackId) {
++        if (draggedTab !== lastTab) {
++          this.moveInStack(draggedTab, lastTab, false);
++        }
++      } 
++      else {
++        let movingTabs = this.stackTabs(draggedTab);
++        if (!movingTabs.length) {
++          movingTabs = [draggedTab];
++        }
++        for (let movingTab of movingTabs) {
++          this.setStack(movingTab, targetStackId);
++        }
++        gBrowser.moveTabsAfter(movingTabs, lastTab);
++        this.refresh();
++      }
++
++      this._draggedStackTab = null;
++      this._draggedExternalTab = null;
++      this._draggedButton = null;
++      this._isDraggingTab = false;
++      this._mouseDownOnTab = false;
++    });
++  },
++
++  renderStackBars() {
++    let bar = document.getElementById("tab-stack-bars");
++    let container = document.getElementById("tab-stack-bars-container");
++
++    if (!bar || !container) {
++      return;
++    }
++
++    let stack =
++      gBrowser.tabContainer.getAttribute("orient") == "horizontal"
++        ? this.activeStackTabs()
++        : [];
++    if (stack.length < 2 || this.isCollapsed(stack[0])) {
++      stack = [];
++    }
++
++    bar.hidden = !stack.length;
++    if (!stack.length) {
++      container.replaceChildren();
++      return;
++    }
++
++    let row = document.createXULElement("hbox");
++
++    row.className = "tab-stack-bar-row";
++    row.setAttribute("role", "tablist");
++    row.append(
++      ...stack.map(tab => this.createStackBarTab(tab)),
++      this.createStackBarNewTabButton()
++    );
++    this._setupStackBarRowDnd(row);
++    
++    container.replaceChildren(row);
++  },
++
++  refresh() {
++    let stacks = new Map();
++
++    for (let tab of this.tabs()) {
++      tab.toggleAttribute("stack-child", false);
++      tab.toggleAttribute("stack-hidden", false);
++      tab.toggleAttribute("stack-current", false);
++      tab.toggleAttribute("stack-collapsed", false);
++      tab.style.setProperty("--stack-depth", 0);
++      delete tab.dataset.stackTabCount;
++      let existingBadge = tab.querySelector(".tab-stack-count");
++      if (existingBadge) existingBadge.remove();
++
++      let stackId = this.stackId(tab);
++
++      if (stackId) {
++        if (!stacks.has(stackId)) {
++          stacks.set(stackId, []);
++        }
++
++        stacks.get(stackId).push(tab);
++      }
++    }
++
++    for (let stack of stacks.values()) {
++      if (stack.length < 2) {
++        this.setStack(stack[0], "");
++        this.SessionStore.deleteCustomTabValue(stack[0], this.COLLAPSED_KEY);
++        continue;
++      }
++
++      let collapsed = this.isCollapsed(stack[0]);
++      let currentTab = this.currentStackTab(stack);
++      for (let tab of stack) {
++        let isCurrent = tab === currentTab;
++        tab.toggleAttribute("stack-child", !isCurrent);
++        tab.toggleAttribute("stack-hidden", !isCurrent && collapsed);
++        tab.toggleAttribute("stack-current", isCurrent);
++        tab.toggleAttribute("stack-collapsed", isCurrent && collapsed);
++        tab.style.setProperty("--stack-depth", isCurrent ? 0 : 1);
++        if (isCurrent) {
++          tab.dataset.stackTabCount = stack.length;
++          let closeBtn = tab.querySelector(".tab-close-button");
++          if (closeBtn) {
++            let badge = document.createElement("span");
++            badge.className = "tab-stack-count";
++            badge.textContent = stack.length;
++            closeBtn.parentNode.insertBefore(badge, closeBtn);
++          }
++        }
++      }
++
++    }
++    this.renderStackBars();
++  },
++};
++
+ var gBrowserInit = {
+   delayedStartupFinished: false,
+   domContentLoaded: false,
+@@ -463,6 +1492,18 @@ var gBrowserInit = {
+     ctrlTab.readPref();
+     Services.prefs.addObserver(ctrlTab.prefName, ctrlTab);
+ 
++    const updateToolbarOpacity = () => {
++      const val = Services.prefs.getIntPref("simple.theme.transparent-toolbar.opacity", 55);
++      document.documentElement.style.setProperty("--simple-toolbar-opacity", val + "%");
++      document.documentElement.style.setProperty("--toolbar-opacity", val + "%");
++      document.documentElement.style.setProperty("--simple-urlbar-opacity", Math.min(100, val + 15) + "%");
++      document.documentElement.style.setProperty("--urlbar-opacity", Math.min(100, val + 15) + "%");
++    };
++
++    
++    updateToolbarOpacity();
++    Services.prefs.addObserver("simple.theme.transparent-toolbar.opacity", updateToolbarOpacity);
++
+     // The object handling the downloads indicator is initialized here in the
+     // delayed startup function, but the actual indicator element is not loaded
+     // unless there are downloads to be displayed.
+@@ -632,8 +1673,11 @@ var gBrowserInit = {
+     SessionStore.promiseAllWindowsRestored.then(() => {
+       this._schedulePerWindowIdleTasks();
+       document.documentElement.setAttribute("sessionrestored", "true");
++      TabStacks.refresh();
+     });
+ 
++    TabStacks.init();
++
+     this.delayedStartupFinished = true;
+     _resolveDelayedStartup();
+     Services.obs.notifyObservers(window, "browser-delayed-startup-finished");
+@@ -1118,6 +2162,8 @@ var gBrowserInit = {
+       PanelUI.uninit();
+     }
+ 
++    TabStacks.uninit();
++
+     // Final window teardown, do this last.
+     gBrowser.destroy();
+     window.XULBrowserWindow = null;
+diff --git a/firefox/browser/base/content/browser-sets.js b/firefox/browser/base/content/browser-sets.js
+index 9cff49a7b8..6575fa9892 100644
+--- a/firefox/browser/base/content/browser-sets.js
++++ b/firefox/browser/base/content/browser-sets.js
+@@ -22,7 +22,11 @@ document.addEventListener(
+             BrowserCommands.handleShiftBackspace();
+             break;
+           case "cmd_newNavigatorTab":
+-            BrowserCommands.openTab({ event });
++            if (window.TabStacks?.activeStackTabs().length) {
++              window.TabStacks.openTabInActiveStack();
++            } else {
++              BrowserCommands.openTab({ event });
++            }
+             break;
+           case "cmd_newNavigatorTabNoEvent":
+             BrowserCommands.openTab();
+diff --git a/firefox/browser/base/content/main-popupset.inc.xhtml b/firefox/browser/base/content/main-popupset.inc.xhtml
+index 03673f1ce1..d0dc21d78e 100644
+--- a/firefox/browser/base/content/main-popupset.inc.xhtml
++++ b/firefox/browser/base/content/main-popupset.inc.xhtml
+@@ -43,6 +43,17 @@
+     <menuitem id="context_unpinTab" data-lazy-l10n-id="unpin-tab" hidden="true"/>
+     <menuitem id="context_pinSelectedTabs" data-lazy-l10n-id="pin-selected-tabs" hidden="true"/>
+     <menuitem id="context_unpinSelectedTabs" data-lazy-l10n-id="unpin-selected-tabs" hidden="true"/>
++    <menuseparator id="context_StackSeparator" hidden="true"/>
++    <menuitem id="context_StackUnderActive"
++              label="Stack Under Active Tab"
++              hidden="true"/>
++    <menuitem id="context_Unstack" label="Unstack Tab" hidden="true"/>
++    <menuitem id="context_ToggleStack" hidden="true"/>
++    <menuitem id="context_neverAutoHibernate"
++              label="Never Auto-Hibernate"/>
++    <menuitem id="context_allowAutoHibernate"
++              label="Allow Auto-Hibernation"
++              hidden="true"/>
+     <menuitem id="context_unloadTab"
+               data-lazy-l10n-id="tab-context-unload-n-tabs"
+               data-l10n-args='{"tabCount": 1}'/>
+diff --git a/firefox/browser/base/content/main-popupset.js b/firefox/browser/base/content/main-popupset.js
+index e22049e080..e9f46c6fd5 100644
+--- a/firefox/browser/base/content/main-popupset.js
++++ b/firefox/browser/base/content/main-popupset.js
+@@ -62,6 +62,21 @@ document.addEventListener(
+         case "context_unpinSelectedTabs":
+           gBrowser.unpinMultiSelectedTabs();
+           break;
++        case "context_StackUnderActive":
++          TabStacks.stack(TabContextMenu.contextTab, gBrowser.selectedTab);
++          break;
++        case "context_Unstack":
++          TabStacks.unstack(TabContextMenu.contextTab);
++          break;
++        case "context_ToggleStack":
++          TabStacks.toggle(TabContextMenu.contextTab);
++          break;
++        case "context_neverAutoHibernate":
++          TabContextMenu.setContextTabsAutoDiscardable(false);
++          break;
++        case "context_allowAutoHibernate":
++          TabContextMenu.setContextTabsAutoDiscardable(true);
++          break;
+         case "context_duplicateTab":
+           duplicateTabIn(TabContextMenu.contextTab, "tab");
+           break;
+diff --git a/firefox/browser/base/content/navigator-toolbox.inc.xhtml b/firefox/browser/base/content/navigator-toolbox.inc.xhtml
+index 595bdd6f4a..979c4f970e 100644
+--- a/firefox/browser/base/content/navigator-toolbox.inc.xhtml
++++ b/firefox/browser/base/content/navigator-toolbox.inc.xhtml
+@@ -104,6 +104,13 @@
+ 
+   </toolbar>
+ 
++  <toolbar id="tab-stack-bars"
++           class="browser-toolbar"
++           fullscreentoolbar="true"
++           hidden="true">
++    <vbox id="tab-stack-bars-container" flex="1"/>
++  </toolbar>
++
+   <toolbar id="nav-bar"
+            class="browser-toolbar chromeclass-location"
+            data-l10n-id="navbar-accessible"
+diff --git a/firefox/browser/branding/unofficial/configure.sh b/firefox/browser/branding/unofficial/configure.sh
+index edd3bd3e86..a7acef8b2e 100644
+--- a/firefox/browser/branding/unofficial/configure.sh
++++ b/firefox/browser/branding/unofficial/configure.sh
+@@ -2,4 +2,4 @@
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+-MOZ_APP_DISPLAYNAME=Nightly
++MOZ_APP_DISPLAYNAME=simple
+diff --git a/firefox/browser/branding/unofficial/locales/en-US/brand.ftl b/firefox/browser/branding/unofficial/locales/en-US/brand.ftl
+index 5eaea9a7c4..8e736398cd 100644
+--- a/firefox/browser/branding/unofficial/locales/en-US/brand.ftl
++++ b/firefox/browser/branding/unofficial/locales/en-US/brand.ftl
+@@ -16,12 +16,12 @@
+ ## For further details, consult:
+ ## https://mozilla-l10n.github.io/styleguides/mozilla_general/#brands-copyright-and-trademark
+ 
+--brand-shorter-name = Nightly
+--brand-short-name = Nightly
+--brand-shortcut-name = Nightly
+--brand-full-name = Nightly
++-brand-shorter-name = simple
++-brand-short-name = simple
++-brand-shortcut-name = simple
++-brand-full-name = simple
+ # This brand name can be used in messages where the product name needs to
+ # remain unchanged across different versions (Nightly, Beta, etc.).
+--brand-product-name = Firefox
+--vendor-short-name = Mozilla
++-brand-product-name = simple
++-vendor-short-name = simple
+ trademarkInfo = { " " }
+diff --git a/firefox/browser/branding/unofficial/locales/en-US/brand.properties b/firefox/browser/branding/unofficial/locales/en-US/brand.properties
+index 346c3bdb50..0c242e2c2a 100644
+--- a/firefox/browser/branding/unofficial/locales/en-US/brand.properties
++++ b/firefox/browser/branding/unofficial/locales/en-US/brand.properties
+@@ -2,6 +2,6 @@
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+-brandShorterName=Nightly
+-brandShortName=Nightly
+-brandFullName=Nightly
++brandShorterName=simple
++brandShortName=simple
++brandFullName=simple
+diff --git a/firefox/browser/chrome/components/custom-panel.html b/firefox/browser/chrome/components/custom-panel.html
+index 44d03ca610..e69de29bb2 100644
+--- a/firefox/browser/chrome/components/custom-panel.html
++++ b/firefox/browser/chrome/components/custom-panel.html
+@@ -1 +0,0 @@
+-<!-- Custom UI Component Template -->
+diff --git a/firefox/browser/chrome/js/main.uc.js b/firefox/browser/chrome/js/main.uc.js
+index 12344ce076..e69de29bb2 100644
+--- a/firefox/browser/chrome/js/main.uc.js
++++ b/firefox/browser/chrome/js/main.uc.js
+@@ -1 +0,0 @@
+-// Custom Browser Chrome Script
+diff --git a/firefox/browser/chrome/theme/variables.css b/firefox/browser/chrome/theme/variables.css
+index d9f7149400..483b12b705 100644
+--- a/firefox/browser/chrome/theme/variables.css
++++ b/firefox/browser/chrome/theme/variables.css
+@@ -13,4 +13,4 @@
+   --zen-sidebar-collapsed-width: 52px;
+   --zen-canvas-radius: 12px;
+   --zen-canvas-padding: 8px;
+-}
++}
+\ No newline at end of file
+diff --git a/firefox/browser/chrome/userChrome.css b/firefox/browser/chrome/userChrome.css
+index 4f48450a50..e69de29bb2 100644
+--- a/firefox/browser/chrome/userChrome.css
++++ b/firefox/browser/chrome/userChrome.css
+@@ -1,9 +0,0 @@
+-/* ==========================================================================
+-   Zen-Style Browser UI Master Stylesheet
+-   ========================================================================== */
+-
+-@import url("chrome://browser/content/chrome/theme/variables.css");
+-@import url("chrome://browser/content/chrome/theme/layout.css");
+-@import url("chrome://browser/content/chrome/theme/viewport-canvas.css");
+-@import url("chrome://browser/content/chrome/theme/vertical-tabs.css");
+-@import url("chrome://browser/content/chrome/theme/floating-urlbar.css");
+diff --git a/firefox/browser/chrome/userContent.css b/firefox/browser/chrome/userContent.css
+index 3b918e0506..e69de29bb2 100644
+--- a/firefox/browser/chrome/userContent.css
++++ b/firefox/browser/chrome/userContent.css
+@@ -1 +0,0 @@
+-/* Custom Web Page Content Stylesheet */
+diff --git a/firefox/browser/components/BrowserComponents.manifest b/firefox/browser/components/BrowserComponents.manifest
+index 3e7e76f792..173594d665 100644
+--- a/firefox/browser/components/BrowserComponents.manifest
++++ b/firefox/browser/components/BrowserComponents.manifest
+@@ -7,7 +7,7 @@
+ #   browser:        {ec8030f7-c20a-464f-9b0e-13a3a9e97384}
+ #   mobile/android: {aa3c5121-dab2-40e2-81ca-7ea25febc110}
+ 
+-category app-startup nsBrowserGlue @mozilla.org/browser/browserglue;1 application={ec8030f7-c20a-464f-9b0e-13a3a9e97384} application={aa3c5121-dab2-40e2-81ca-7ea25febc110}
++category app-startup nsBrowserGlue @mozilla.org/browser/browserglue;1 application={ec8030f7-c20a-464f-9b0e-13a3a9e97384} application={aa3c5121-dab2-40e2-81ca-7ea25febc110} application={5a5e15ae-ed2f-41d9-9778-776bb1ce8820}
+ 
+ # Browser global components initializing before UI startup
+ category browser-before-ui-startup resource:///modules/sessionstore/SessionStore.sys.mjs SessionStore.init
+diff --git a/firefox/browser/components/preferences/jar.mn b/firefox/browser/components/preferences/jar.mn
+index 118709048e..f20c4f477f 100644
+--- a/firefox/browser/components/preferences/jar.mn
++++ b/firefox/browser/components/preferences/jar.mn
+@@ -16,6 +16,8 @@ browser.jar:
+    content/browser/preferences/sync.js
+    content/browser/preferences/experimental.js
+    content/browser/preferences/moreFromMozilla.js
++   content/browser/preferences/simpleAppearance.js
++   content/browser/preferences/simpleTabManagement.js
+    content/browser/preferences/fxaPairDevice.xhtml
+    content/browser/preferences/fxaPairDevice.js
+    content/browser/preferences/findInPage.js
+diff --git a/firefox/browser/components/preferences/main.inc.xhtml b/firefox/browser/components/preferences/main.inc.xhtml
+index 66ce978d9b..03a9acebf6 100644
+--- a/firefox/browser/components/preferences/main.inc.xhtml
++++ b/firefox/browser/components/preferences/main.inc.xhtml
+@@ -136,6 +136,10 @@
+     <checkbox id="warnCloseMultiple" data-l10n-id="ask-on-close-multiple-tabs"
+               preference="browser.tabs.warnOnClose"/>
+ 
++
++
++
++
+ #ifndef XP_WIN
+     <checkbox id="warnOnQuitKey" preference="browser.warnOnQuitShortcut"/>
+ #endif
+diff --git a/firefox/browser/components/preferences/preferences.js b/firefox/browser/components/preferences/preferences.js
+index b5af9af69f..2eb1e28da5 100644
+--- a/firefox/browser/components/preferences/preferences.js
++++ b/firefox/browser/components/preferences/preferences.js
+@@ -13,6 +13,8 @@
+ /* import-globals-from experimental.js */
+ /* import-globals-from moreFromMozilla.js */
+ /* import-globals-from findInPage.js */
++/* import-globals-from simpleAppearance.js */
++/* import-globals-from simpleTabManagement.js */
+ /* import-globals-from /browser/base/content/utilityOverlay.js */
+ /* import-globals-from /toolkit/content/preferencesBindings.js */
+ 
+@@ -191,6 +193,8 @@ function init_all() {
+   // the entire document.
+   Preferences.queueUpdateOfAllElements();
+ 
++  register_module("paneSimpleAppearance", gSimpleAppearancePane);
++  register_module("paneSimpleTabManagement", gSimpleTabManagementPane);
+   register_module("paneGeneral", gMainPane);
+   register_module("paneHome", gHomePane);
+   register_module("paneSearch", gSearchPane);
+@@ -231,7 +235,11 @@ function init_all() {
+   gMainPane.preInit();
+ 
+   let categories = document.getElementById("categories");
+-  categories.addEventListener("select", event => gotoPref(event.target.value));
++  categories.addEventListener("select", event => {
++    if (event.target.value) {
++      gotoPref(event.target.value);
++    }
++  });
+ 
+   document.documentElement.addEventListener("keydown", function (event) {
+     if (event.keyCode == KeyEvent.DOM_VK_TAB) {
+diff --git a/firefox/browser/components/preferences/preferences.xhtml b/firefox/browser/components/preferences/preferences.xhtml
+index a50fc9cae8..db0e1f2605 100644
+--- a/firefox/browser/components/preferences/preferences.xhtml
++++ b/firefox/browser/components/preferences/preferences.xhtml
+@@ -106,6 +106,32 @@
+     <vbox class="navigation">
+       <!-- category list -->
+       <richlistbox id="categories" data-l10n-id="category-list" data-l10n-attrs="aria-label">
++
++        <richlistitem class="category-header" disabled="true" selectable="false" role="heading" aria-level="2">
++          <label class="category-header-label">Simple</label>
++        </richlistitem>
++
++        <richlistitem id="category-simple-appearance"
++                      class="category"
++                      value="paneSimpleAppearance"
++                      tooltiptext="Appearance"
++                      align="center">
++          <image class="category-icon"/>
++          <label class="category-name" flex="1">Appearance</label>
++        </richlistitem>
++
++        <richlistitem id="category-simple-tab-management"
++                      class="category"
++                      value="paneSimpleTabManagement"
++                      tooltiptext="Tab Management"
++                      align="center">
++          <image class="category-icon"/>
++          <label class="category-name" flex="1">Tab Management</label>
++        </richlistitem>
++        <richlistitem class="category-header" disabled="true" selectable="false" role="heading" aria-level="2">
++          <label class="category-header-label">Firefox</label>
++        </richlistitem>
++
+         <richlistitem id="category-general"
+                       class="category"
+                       value="paneGeneral"
+@@ -236,6 +262,8 @@
+         </hbox>
+         <vbox id="mainPrefPane">
+ #include searchResults.inc.xhtml
++#include simpleAppearance.inc.xhtml
++#include simpleTabManagement.inc.xhtml
+ #include main.inc.xhtml
+ #include home.inc.xhtml
+ #include search.inc.xhtml
+diff --git a/firefox/browser/components/preferences/simpleAppearance.inc.xhtml b/firefox/browser/components/preferences/simpleAppearance.inc.xhtml
+new file mode 100644
+index 0000000000..c2b49b5b18
+--- /dev/null
++++ b/firefox/browser/components/preferences/simpleAppearance.inc.xhtml
+@@ -0,0 +1,29 @@
++
++<script src="chrome://browser/content/preferences/simpleAppearance.js"/>
++
++<html:template id="template-paneSimpleAppearance">
++<hbox id="simpleAppearanceCategory"
++      class="subcategory"
++      hidden="true"
++      data-category="paneSimpleAppearance">
++  <html:h1>Appearance</html:h1>
++</hbox>
++
++<groupbox id="simpleAppearanceGroup"
++          data-category="paneSimpleAppearance"
++          hidden="true">
++  <checkbox id="transparentToolbar"
++            label="Semi-transparent tabbar &amp; address bar"
++            preference="simple.theme.transparent-toolbar"/>
++
++  <hbox id="transparentToolbarOpacityBox" align="center" style="margin-inline-start: 24px; gap: 8px; margin-block: 4px 8px;">
++    <label control="transparentToolbarOpacity">Opacity:</label>
++    <html:input id="transparentToolbarOpacity"
++                type="range" min="10" max="90" step="5"
++                value="55"
++                preference="simple.theme.transparent-toolbar.opacity"/>
++    <html:span id="transparentToolbarOpacityLabel" style="min-width: 40px; font-weight: 500;">55%</html:span>
++  </hbox>
++</groupbox>
++</html:template>
++
+diff --git a/firefox/browser/components/preferences/simpleAppearance.js b/firefox/browser/components/preferences/simpleAppearance.js
+new file mode 100644
+index 0000000000..63999ad9c7
+--- /dev/null
++++ b/firefox/browser/components/preferences/simpleAppearance.js
+@@ -0,0 +1,100 @@
++
++"use strict";
++
++var gSimpleAppearancePane = {
++  init() {
++    Preferences.addAll([
++      { id: "simple.theme.transparent-toolbar", type: "bool" },
++      { id: "simple.theme.transparent-toolbar.opacity", type: "int" },
++    ]);
++
++    const transparentToolbarPref = Preferences.get(
++      "simple.theme.transparent-toolbar"
++    );
++    const opacityPref = Preferences.get(
++      "simple.theme.transparent-toolbar.opacity"
++    );
++    const transparentToolbarOpacityBox = document.getElementById(
++      "transparentToolbarOpacityBox"
++    );
++    const transparentToolbarOpacitySlider = document.getElementById(
++      "transparentToolbarOpacity"
++    );
++    const transparentToolbarOpacityLabel = document.getElementById(
++      "transparentToolbarOpacityLabel"
++    );
++
++    const updateOpacityUI = (val) => {
++      let opacity = val;
++      if (opacity === undefined || opacity === null) {
++        opacity = parseInt(transparentToolbarOpacitySlider.value, 10);
++      }
++      if (isNaN(opacity)) {
++        opacity = Services.prefs.getIntPref(
++          "simple.theme.transparent-toolbar.opacity",
++          55
++        );
++      }
++      transparentToolbarOpacitySlider.value = opacity;
++      transparentToolbarOpacityLabel.textContent = opacity + "%";
++    };
++
++    const updateTransparentToolbarUI = () => {
++      transparentToolbarOpacityBox.hidden = !transparentToolbarPref.value;
++      updateOpacityUI();
++    };
++
++    let initialOpacity = opacityPref?.value;
++    if (initialOpacity === undefined || initialOpacity === null) {
++      initialOpacity = Services.prefs.getIntPref(
++        "simple.theme.transparent-toolbar.opacity",
++        55
++      );
++    }
++    updateOpacityUI(initialOpacity);
++    updateTransparentToolbarUI();
++
++    transparentToolbarPref.on("change", updateTransparentToolbarUI);
++
++    if (opacityPref) {
++      opacityPref.on("change", () => {
++        updateOpacityUI(opacityPref.value);
++      });
++    }
++
++    const onSliderInput = () => {
++      const val = parseInt(transparentToolbarOpacitySlider.value, 10);
++      transparentToolbarOpacityLabel.textContent = val + "%";
++      if (opacityPref) {
++        opacityPref.value = val;
++      }
++      Services.prefs.setIntPref("simple.theme.transparent-toolbar.opacity", val);
++    };
++
++    transparentToolbarOpacitySlider.addEventListener("input", onSliderInput);
++    transparentToolbarOpacitySlider.addEventListener("change", onSliderInput);
++
++    const prefObserver = {
++      observe(subject, topic, data) {
++        if (data === "simple.theme.transparent-toolbar.opacity") {
++          const val = Services.prefs.getIntPref(data, 55);
++          updateOpacityUI(val);
++        }
++      },
++    };
++    Services.prefs.addObserver(
++      "simple.theme.transparent-toolbar.opacity",
++      prefObserver
++    );
++    window.addEventListener(
++      "unload",
++      () => {
++        Services.prefs.removeObserver(
++          "simple.theme.transparent-toolbar.opacity",
++          prefObserver
++        );
++      },
++      { once: true }
++    );
++  },
++};
+diff --git a/firefox/browser/components/preferences/simpleTabManagement.inc.xhtml b/firefox/browser/components/preferences/simpleTabManagement.inc.xhtml
+new file mode 100644
+index 0000000000..1a198922c8
+--- /dev/null
++++ b/firefox/browser/components/preferences/simpleTabManagement.inc.xhtml
+@@ -0,0 +1,51 @@
++
++<script src="chrome://browser/content/preferences/simpleTabManagement.js"/>
++
++<html:template id="template-paneSimpleTabManagement">
++<hbox id="simpleTabManagementCategory"
++      class="subcategory"
++      hidden="true"
++      data-category="paneSimpleTabManagement">
++  <html:h1>Tab Management</html:h1>
++</hbox>
++
++<groupbox id="simpleTabHibernationGroup"
++          data-category="paneSimpleTabManagement"
++          hidden="true">
++  <checkbox id="simpleTabHibernationEnabled"
++            label="Hibernate inactive tabs"
++            preference="simple.tabs.hibernate.enabled"/>
++  <description class="indent tip-caption">
++    Unload tabs that have not been used for the selected amount of time to free memory.
++  </description>
++
++  <hbox id="simpleTabHibernationTimeoutBox" class="indent" align="center">
++    <label control="simpleTabHibernationTimeout">Hibernate tabs after:</label>
++    <menulist id="simpleTabHibernationTimeout"
++              preference="simple.tabs.hibernate.timeout_minutes">
++      <menupopup>
++        <menuitem label="5 minutes" value="5"/>
++        <menuitem label="15 minutes" value="15"/>
++        <menuitem label="30 minutes" value="30"/>
++        <menuitem label="1 hour" value="60"/>
++        <menuitem label="2 hours" value="120"/>
++        <menuitem label="4 hours" value="240"/>
++      </menupopup>
++    </menulist>
++  </hbox>
++  <description id="simpleTabHibernationProtection" class="indent tip-caption">
++    Tabs playing media, using Picture-in-Picture, or using WebRTC are kept active.
++  </description>
++</groupbox>
++
++<groupbox id="simpleTabListGroup"
++          data-category="paneSimpleTabManagement"
++          hidden="true">
++  <caption label="Open tabs"/>
++  <description class="tip-caption">
++    Tabs are grouped by stack. Hibernated tabs are unloaded until you open them again.
++  </description>
++  <vbox id="simpleTabList" class="simple-tab-list" role="list"/>
++</groupbox>
++
++</html:template>
+diff --git a/firefox/browser/components/preferences/simpleTabManagement.js b/firefox/browser/components/preferences/simpleTabManagement.js
+new file mode 100644
+index 0000000000..e23b1755b3
+--- /dev/null
++++ b/firefox/browser/components/preferences/simpleTabManagement.js
+@@ -0,0 +1,246 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++"use strict";
++
++/* global Preferences */
++
++var gSimpleTabManagementPane = {
++  init() {
++    Preferences.addAll([
++      { id: "simple.tabs.hibernate.enabled", type: "bool" },
++      { id: "simple.tabs.hibernate.timeout_minutes", type: "int" },
++    ]);
++
++    const enabledPref = Preferences.get("simple.tabs.hibernate.enabled");
++    const timeoutBox = document.getElementById(
++      "simpleTabHibernationTimeoutBox"
++    );
++    const protectionDescription = document.getElementById(
++      "simpleTabHibernationProtection"
++    );
++
++    const updateHibernationUI = () => {
++      timeoutBox.hidden = !enabledPref.value;
++      protectionDescription.hidden = !enabledPref.value;
++    };
++
++    enabledPref.on("change", updateHibernationUI);
++    updateHibernationUI();
++
++    this._tabList = document.getElementById("simpleTabList");
++    this._browserWindow = window.browsingContext.topChromeWindow;
++    this._tabContainer = this._browserWindow.gBrowser.tabContainer;
++    this._collapsedStacks = new Set();
++    this._scheduleTabListUpdate = () => {
++      if (!this._tabListUpdatePending) {
++        this._tabListUpdatePending = true;
++        queueMicrotask(() => {
++          this._tabListUpdatePending = false;
++          this._renderTabList();
++        });
++      }
++    };
++    this._tabEvents = [
++      "TabOpen",
++      "TabClose",
++      "TabMove",
++      "TabSelect",
++      "TabAttrModified",
++      "TabPinned",
++      "TabUnpinned",
++      "TabBrowserDiscarded",
++    ];
++    for (const eventName of this._tabEvents) {
++      this._tabContainer.addEventListener(
++        eventName,
++        this._scheduleTabListUpdate
++      );
++    }
++    window.addEventListener("unload", () => this._uninit(), { once: true });
++    this._renderTabList();
++  },
++
++  _uninit() {
++    for (const eventName of this._tabEvents || []) {
++      this._tabContainer.removeEventListener(
++        eventName,
++        this._scheduleTabListUpdate
++      );
++    }
++  },
++
++  _renderTabList() {
++    const tabs = [...this._browserWindow.gBrowser.tabs].filter(
++      tab => !tab.closing
++    );
++    const stacks = new Map();
++    const unstackedTabs = [];
++
++    for (const tab of tabs) {
++      const stackId = this._browserWindow.TabStacks?.stackId(tab);
++      if (stackId) {
++        if (!stacks.has(stackId)) {
++          stacks.set(stackId, []);
++        }
++        stacks.get(stackId).push(tab);
++      } else {
++        unstackedTabs.push(tab);
++      }
++    }
++
++    const fragment = document.createDocumentFragment();
++    let stackNumber = 0;
++    for (const [stackId, stack] of stacks) {
++      if (stack.length < 2) {
++        unstackedTabs.push(...stack);
++        continue;
++      }
++      stackNumber++;
++      const collapsed = this._collapsedStacks.has(stackId);
++      fragment.appendChild(
++        this._createStackHeader(stack, stackNumber, stackId, collapsed)
++      );
++      if (!collapsed) {
++        for (const tab of stack) {
++          fragment.appendChild(this._createTabRow(tab, true));
++        }
++      }
++    }
++
++    if (unstackedTabs.length) {
++      if (stackNumber) {
++        fragment.appendChild(this._createSectionLabel("Other tabs"));
++      }
++      for (const tab of unstackedTabs) {
++        fragment.appendChild(this._createTabRow(tab, false));
++      }
++    }
++
++    this._tabList.replaceChildren(fragment);
++  },
++
++  _createStackHeader(stack, number, stackId, collapsed) {
++    const hibernated = stack.filter(tab => this._isHibernated(tab)).length;
++    const toggle = document.createElementNS(
++      "http://www.w3.org/1999/xhtml",
++      "button"
++    );
++    toggle.className = "simple-tab-stack-toggle";
++    toggle.type = "button";
++    toggle.setAttribute("aria-expanded", String(!collapsed));
++    const chevron = document.createElementNS(
++      "http://www.w3.org/1999/xhtml",
++      "span"
++    );
++    chevron.className = "simple-tab-stack-chevron";
++    chevron.textContent = collapsed ? "Γû╕" : "Γû╛";
++    const label = document.createElementNS(
++      "http://www.w3.org/1999/xhtml",
++      "span"
++    );
++    label.className = "simple-tab-stack-name";
++    label.textContent = `Stack ${number}`;
++    const count = document.createElementNS(
++      "http://www.w3.org/1999/xhtml",
++      "span"
++    );
++    count.className = "simple-tab-stack-count";
++    count.textContent = `${stack.length} tabs${
++      hibernated ? ` ┬╖ ${hibernated} hibernated` : ""
++    }`;
++    toggle.append(chevron, label, count);
++    toggle.addEventListener("click", () => {
++      if (this._collapsedStacks.has(stackId)) {
++        this._collapsedStacks.delete(stackId);
++      } else {
++        this._collapsedStacks.add(stackId);
++      }
++      this._renderTabList();
++    });
++    return toggle;
++  },
++
++  _isHibernated(tab) {
++    return tab.hasAttribute("discarded") || tab.hasAttribute("pending");
++  },
++
++  _createSectionLabel(value) {
++    const label = document.createXULElement("label");
++    label.setAttribute("value", value);
++    label.className = "simple-tab-section-label";
++    return label;
++  },
++
++  _createTabRow(tab, inStack) {
++    const isHibernated = this._isHibernated(tab);
++    const row = document.createXULElement("hbox");
++    row.className = "simple-tab-row";
++    row.setAttribute("align", "center");
++    row.setAttribute("role", "listitem");
++    row.toggleAttribute("data-in-stack", inStack);
++    row.toggleAttribute("data-hibernated", isHibernated);
++
++    const icon = document.createXULElement("image");
++    icon.className = "simple-tab-icon";
++    if (tab.image) {
++      icon.setAttribute("src", tab.image);
++    }
++    row.appendChild(icon);
++
++    const title = document.createXULElement("label");
++    title.setAttribute("value", tab.label || "New Tab");
++    title.setAttribute("crop", "end");
++    title.setAttribute("flex", "1");
++    title.className = "simple-tab-title";
++    row.appendChild(title);
++
++    const state = document.createXULElement("label");
++    state.className = "simple-tab-state";
++    if (isHibernated) {
++      state.setAttribute("value", "Hibernated");
++      state.setAttribute("data-hibernated", "true");
++      state.setAttribute(
++        "tooltiptext",
++        "Hibernated tab. Select Wake to reload it."
++      );
++    } else if (tab.selected) {
++      state.setAttribute("value", "Active");
++    }
++    row.appendChild(state);
++
++    const action = document.createXULElement("button");
++    action.className = "simple-tab-action";
++    if (isHibernated) {
++      action.setAttribute("label", "Wake");
++      action.addEventListener("command", () => {
++        this._browserWindow.gBrowser.selectedTab = tab;
++      });
++    } else {
++      const canHibernate = !tab.selected;
++      action.setAttribute("label", "Hibernate");
++      action.disabled = !canHibernate;
++      if (!canHibernate) {
++        action.setAttribute(
++          "tooltiptext",
++          "The active tab cannot be hibernated."
++        );
++      }
++      action.addEventListener("command", async () => {
++        action.disabled = true;
++        action.setAttribute("label", "HibernatingΓÇª");
++        try {
++          await this._browserWindow.gBrowser.prepareDiscardBrowser(tab);
++          this._browserWindow.gBrowser.discardBrowser(tab, true);
++        } catch (error) {
++          console.error("Unable to hibernate tab", error);
++        } finally {
++          this._renderTabList();
++        }
++      });
++    }
++    row.appendChild(action);
++    return row;
++  },
++};
+diff --git a/firefox/browser/components/tabbrowser/TabUnloader.sys.mjs b/firefox/browser/components/tabbrowser/TabUnloader.sys.mjs
+index 0c62cdf29a..826291aaa3 100644
+--- a/firefox/browser/components/tabbrowser/TabUnloader.sys.mjs
++++ b/firefox/browser/components/tabbrowser/TabUnloader.sys.mjs
+@@ -30,6 +30,11 @@ const kMinInactiveDurationInMs = Services.prefs.getIntPref(
+   "browser.tabs.min_inactive_duration_before_unload"
+ );
+ 
++const PREF_AUTO_HIBERNATE_ENABLED = "simple.tabs.hibernate.enabled";
++const PREF_AUTO_HIBERNATE_TIMEOUT_MINUTES =
++  "simple.tabs.hibernate.timeout_minutes";
++const AUTO_HIBERNATE_INTERVAL_MS = 60 * 1000;
++
+ let criteriaTypes = [
+   ["isNonDiscardable", NEVER_DISCARD],
+   ["isLoading", 8],
+@@ -163,10 +168,69 @@ export var TabUnloader = {
+    * Initialize low-memory detection and tab auto-unloading.
+    */
+   init() {
++    if (this._initialized) {
++      return;
++    }
++    this._initialized = true;
++
+     const watcher = Cc["@mozilla.org/xpcom/memory-watcher;1"].getService(
+       Ci.nsIAvailableMemoryWatcherBase
+     );
+     watcher.registerTabUnloader(this);
++
++    Services.prefs.addObserver(PREF_AUTO_HIBERNATE_ENABLED, this);
++    Services.prefs.addObserver(PREF_AUTO_HIBERNATE_TIMEOUT_MINUTES, this);
++    this._updateAutoHibernateTimer();
++  },
++
++  observe(subject, topic) {
++    if (topic == "nsPref:changed") {
++      this._updateAutoHibernateTimer();
++    }
++  },
++
++  _updateAutoHibernateTimer() {
++    if (!Services.prefs.getBoolPref(PREF_AUTO_HIBERNATE_ENABLED, false)) {
++      this._autoHibernateTimer?.cancel();
++      this._autoHibernateTimer = null;
++      return;
++    }
++
++    if (!this._autoHibernateTimer) {
++      this._autoHibernateTimer = Cc["@mozilla.org/timer;1"].createInstance(
++        Ci.nsITimer
++      );
++      this._autoHibernateTimer.initWithCallback(
++        () => this._hibernateInactiveTabs(),
++        AUTO_HIBERNATE_INTERVAL_MS,
++        Ci.nsITimer.TYPE_REPEATING_SLACK
++      );
++    }
++
++    this._hibernateInactiveTabs();
++  },
++
++  async _hibernateInactiveTabs() {
++    if (this._isUnloading) {
++      return;
++    }
++
++    this._isUnloading = true;
++    try {
++      const timeoutMinutes = Math.max(
++        1,
++        Services.prefs.getIntPref(PREF_AUTO_HIBERNATE_TIMEOUT_MINUTES, 30)
++      );
++      await this.unloadTabsInactiveFor(timeoutMinutes * 60 * 1000);
++    }
++
++    catch (error) {
++      console.error("Unable to hibernate inactive tabs", error);
++    }
++
++    finally {
++      this._isUnloading = false;
++    }
+   },
+ 
+   isDiscardable(tab) {
+@@ -322,13 +386,35 @@ export var TabUnloader = {
+   async unloadLeastRecentlyUsedTab(
+     minInactiveDuration = kMinInactiveDurationInMs
+   ) {
+-    const sortedTabs = await this.getSortedTabs(minInactiveDuration);
++    return (
++      (await this._unloadTabs(minInactiveDuration, 1)) > 0
++    );
++  },
++
++  
++  async unloadTabsInactiveFor(
++    minInactiveDuration = kMinInactiveDurationInMs,
++    tabMethods = DefaultTabUnloaderMethods
++  ) {
++    return this._unloadTabs(minInactiveDuration, Infinity, tabMethods);
++  },
++
++  async _unloadTabs(
++    minInactiveDuration,
++    maximumTabs,
++    tabMethods = DefaultTabUnloaderMethods
++  ) {
++    const sortedTabs = await this.getSortedTabs(
++      minInactiveDuration,
++      tabMethods
++    );
++    let unloadedTabs = 0;
+ 
+     for (let tabInfo of sortedTabs) {
+       if (!this.isDiscardable(tabInfo)) {
+         // Since |sortedTabs| is sorted, once we see an undiscardable tab
+         // no need to continue the loop.
+-        return false;
++        break;
+       }
+ 
+       const remoteType = tabInfo.tab?.linkedBrowser?.remoteType;
+@@ -338,10 +424,13 @@ export var TabUnloader = {
+           `TabUnloader discarded <${remoteType}>`
+         );
+         tabInfo.tab.updateLastUnloadedByTabUnloader();
+-        return true;
++        unloadedTabs++;
++        if (unloadedTabs == maximumTabs) {
++          break;
++        }
+       }
+     }
+-    return false;
++    return unloadedTabs;
+   },
+ 
+   QueryInterface: ChromeUtils.generateQI([
+diff --git a/firefox/browser/components/tabbrowser/content/tabbrowser.js b/firefox/browser/components/tabbrowser/content/tabbrowser.js
+index 318e09009b..70dd904f7f 100644
+--- a/firefox/browser/components/tabbrowser/content/tabbrowser.js
++++ b/firefox/browser/components/tabbrowser/content/tabbrowser.js
+@@ -8938,6 +8938,11 @@ var TabBarVisibility = {
+ 
+ var TabContextMenu = {
+   contextTab: null,
++  setContextTabsAutoDiscardable(autoDiscardable) {
++    for (let tab of this.contextTabs) {
++      tab.undiscardable = !autoDiscardable;
++    }
++  },
+   _updateToggleMuteMenuItems(aTab, aConditionFn) {
+     ["muted", "soundplaying"].forEach(attr => {
+       if (!aConditionFn || aConditionFn(attr)) {
+@@ -9134,6 +9139,18 @@ var TabContextMenu = {
+       unloadTabItem.hidden = true;
+     }
+ 
++    let neverAutoHibernateItem = document.getElementById(
++      "context_neverAutoHibernate"
++    );
++    let allowAutoHibernateItem = document.getElementById(
++      "context_allowAutoHibernate"
++    );
++    let allTabsAreProtected = this.contextTabs.every(tab => tab.undiscardable);
++    neverAutoHibernateItem.hidden = allTabsAreProtected;
++    allowAutoHibernateItem.hidden = !allTabsAreProtected;
++    neverAutoHibernateItem.label = this.multiselected? "Never Auto-Hibernate Tabs": "Never Auto-Hibernate";
++    allowAutoHibernateItem.label = this.multiselected? "Allow Auto-Hibernation for Tabs": "Allow Auto-Hibernation";
++
+     // Show Play Tab menu item if the tab has attribute activemedia-blocked
+     document.getElementById("context_playTab").hidden = !(
+       this.contextTab.activeMediaBlocked && !this.multiselected
+diff --git a/firefox/browser/components/tabbrowser/test/browser/tabs/browser.toml b/firefox/browser/components/tabbrowser/test/browser/tabs/browser.toml
+index 9063bcf53c..6bd1c96423 100644
+--- a/firefox/browser/components/tabbrowser/test/browser/tabs/browser.toml
++++ b/firefox/browser/components/tabbrowser/test/browser/tabs/browser.toml
+@@ -269,6 +269,8 @@ tags = "vertical-tabs"
+ ["browser_multiselect_tabs_unload.js"]
+ tags = "vertical-tabs"
+ 
++["browser_tab_stacks.js"]
++
+ ["browser_multiselect_tabs_unload_telemetry.js"]
+ skip-if = [
+   "os == 'mac' && os_version == '14.70' && processor == 'x86_64' && opt", # Bug 1929417
+@@ -464,6 +466,8 @@ skip-if = ["true"] # Bug 1616418 Bug 1549985
+ ["browser_tabContextMenu_keyboard.js"]
+ tags = "vertical-tabs"
+ 
++["browser_tab_auto_hibernate.js"]
++
+ ["browser_tabDrop.js"]
+ https_first_disabled = true
+ tags = "vertical-tabs"
+diff --git a/firefox/browser/components/tabbrowser/test/browser/tabs/browser_tab_auto_hibernate.js b/firefox/browser/components/tabbrowser/test/browser/tabs/browser_tab_auto_hibernate.js
+new file mode 100644
+index 0000000000..6518d1b0d0
+--- /dev/null
++++ b/firefox/browser/components/tabbrowser/test/browser/tabs/browser_tab_auto_hibernate.js
+@@ -0,0 +1,44 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++// tests are automated 
++// 
++add_task(async function test_auto_hibernate_context_menu() {
++  let tab = await addTab();
++  let neverAutoHibernateItem = document.getElementById(
++    "context_neverAutoHibernate"
++  );
++  let allowAutoHibernateItem = document.getElementById(
++    "context_allowAutoHibernate"
++  );
++
++  updateTabContextMenu(tab);
++  ok(!neverAutoHibernateItem.hidden, "Never Auto-Hibernate is visible");
++  ok(allowAutoHibernateItem.hidden, "Allow Auto-Hibernation is hidden");
++
++  let protected = BrowserTestUtils.waitForEvent(
++    tab,
++    "TabAttrModified",
++    false,
++    event => event.detail.changed.includes("undiscardable")
++  );
++  neverAutoHibernateItem.click();
++  await protected;
++  ok(tab.undiscardable, "tab is protected from automatic hibernation");
++
++  updateTabContextMenu(tab);
++  ok(neverAutoHibernateItem.hidden, "Never Auto-Hibernate is hidden");
++  ok(!allowAutoHibernateItem.hidden, "Allow Auto-Hibernation is visible");
++
++  let unprotected = BrowserTestUtils.waitForEvent(
++    tab,
++    "TabAttrModified",
++    false,
++    event => event.detail.changed.includes("undiscardable")
++  );
++  allowAutoHibernateItem.click();
++  await unprotected;
++  ok(!tab.undiscardable, "tab can be automatically hibernated again");
++
++  BrowserTestUtils.removeTab(tab);
++});
+diff --git a/firefox/browser/components/tabbrowser/test/browser/tabs/browser_tab_stacks.js b/firefox/browser/components/tabbrowser/test/browser/tabs/browser_tab_stacks.js
+new file mode 100644
+index 0000000000..63daadae66
+--- /dev/null
++++ b/firefox/browser/components/tabbrowser/test/browser/tabs/browser_tab_stacks.js
+@@ -0,0 +1,733 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++ // testing is automated
++
++add_task(async function test_tab_stacks() {
++  let parent = BrowserTestUtils.addTab(gBrowser, "about:blank");
++  let child = BrowserTestUtils.addTab(gBrowser, "about:blank");
++  let grandchild = BrowserTestUtils.addTab(gBrowser, "about:blank");
++
++  TabStacks.stack(child, parent);
++  TabStacks.stack(grandchild, child);
++  Assert.ok(child.hasAttribute("stack-child"), "child is stacked");
++  Assert.equal(
++    child.style.getPropertyValue("--stack-depth"),
++    "1",
++    "child is one level deep"
++  );
++  Assert.equal(
++    grandchild.style.getPropertyValue("--stack-depth"),
++    "1",
++    "stack members share one depth"
++  );
++
++  TabStacks.toggle(parent);
++  Assert.ok(
++    child.hasAttribute("stack-hidden"),
++    "collapsing a parent hides its descendants"
++  );
++  gBrowser.selectedTab = grandchild;
++  Assert.ok(
++    !parent.hasAttribute("stack-collapsed"),
++    "selecting a stack member expands its stack"
++  );
++
++  BrowserTestUtils.removeTab(parent);
++  Assert.ok(
++    child.hasAttribute("stack-current"),
++    "closing the current tab promotes the next stack member"
++  );
++  Assert.ok(
++    grandchild.hasAttribute("stack-child"),
++    "the other member remains a child"
++  );
++
++  TabStacks.unstack(grandchild);
++  Assert.ok(
++    !grandchild.hasAttribute("stack-child"),
++    "unstack removes the child from its stack"
++  );
++  BrowserTestUtils.removeTab(grandchild);
++  BrowserTestUtils.removeTab(child);
++});
++
++
++add_task(async function test_active_stack_gets_a_stack_bar() {
++  let parent = BrowserTestUtils.addTab(gBrowser, "about:blank", {
++    skipAnimation: true,
++  });
++  let child = BrowserTestUtils.addTab(gBrowser, "about:config", {
++    skipAnimation: true,
++  });
++  TabStacks.stack(child, parent);
++  gBrowser.selectedTab = parent;
++
++  let bar = document.getElementById("tab-stack-bars");
++  let container = document.getElementById("tab-stack-bars-container");
++  await TestUtils.waitForCondition(
++    () =>
++      !bar.hidden && container.querySelectorAll(".tab-stack-tab").length == 2,
++    "The active stack's tabs are shown in a stack bar"
++  );
++  Assert.equal(
++    container.querySelector(".tab-stack-tab > .tab-stack").tagName,
++    "stack",
++    "The stack bar uses the regular tab visual structure"
++  );
++  Assert.equal(
++    getComputedStyle(child).display,
++    "none",
++    "Stack children are not shown in the outer tab bar"
++  );
++  Assert.deepEqual(
++    Array.from(
++      container.querySelectorAll(".tab-stack-tab"),
++      button => button.getAttribute("label")
++    ),
++    [parent.label, child.label],
++    "The stack bar preserves the stack's tab order"
++  );
++
++  let selectChild = BrowserTestUtils.waitForEvent(
++    gBrowser.tabContainer,
++    "TabSelect"
++  );
++  EventUtils.synthesizeMouseAtCenter(
++    container.querySelectorAll(".tab-stack-tab")[1],
++    {},
++    window
++  );
++  await selectChild;
++  Assert.equal(
++    gBrowser.selectedTab,
++    child,
++    "A stack-bar tab selects its real tab"
++  );
++
++  TabStacks.toggle(parent);
++  await TestUtils.waitForCondition(
++    () => bar.hidden,
++    "Collapsing the stack hides its stack bar"
++  );
++
++  TabStacks.toggle(parent);
++  BrowserTestUtils.removeTab(child);
++  BrowserTestUtils.removeTab(parent);
++});
++
++add_task(async function test_stack_bar_new_tab_button_adds_to_active_stack() {
++  let parent = BrowserTestUtils.addTab(gBrowser, "about:blank", {
++    skipAnimation: true,
++  });
++  let child = BrowserTestUtils.addTab(gBrowser, "about:config", {
++    skipAnimation: true,
++  });
++  TabStacks.stack(child, parent);
++  gBrowser.selectedTab = parent;
++
++  let bar = document.getElementById("tab-stack-bars");
++  let container = document.getElementById("tab-stack-bars-container");
++  await TestUtils.waitForCondition(
++    () => !bar.hidden,
++    "The stack bar is visible before opening a tab"
++  );
++
++  let button = container.querySelector(".tab-stack-newtab-button");
++  is(
++    button,
++    container.lastElementChild.lastElementChild,
++    "The button follows the stack tabs"
++  );
++
++  let nativeButton = document.getElementById("tabs-newtab-button");
++  let newTabPromise = BrowserTestUtils
++    .waitForEvent(gBrowser.tabContainer, "TabOpen")
++    .then(event => event.target);
++  EventUtils.synthesizeMouseAtCenter(nativeButton, {}, window);
++  let newTab = await newTabPromise;
++
++  await TestUtils.waitForCondition(
++    () => container.querySelectorAll(".tab-stack-tab").length == 3,
++    "The new tab is immediately rendered in the stack bar"
++  );
++  await TestUtils.waitForCondition(
++    () => {
++      let stackTab = container.querySelectorAll(".tab-stack-tab")[2];
++      return (
++        stackTab.getAttribute("label") == newTab.label &&
++        stackTab.querySelector(".tab-label").textContent == newTab.label &&
++        stackTab.querySelector(".tab-icon-image").hasAttribute("fadein") &&
++        stackTab.querySelector(".tab-close-button").hasAttribute("fadein")
++      );
++    },
++    "The new tab's label, favicon, and close button render after its fade-in"
++  );
++  is(
++    TabStacks.stackId(newTab),
++    TabStacks.stackId(parent),
++    "The new tab joins the active stack"
++  );
++  is(gBrowser.selectedTab, newTab, "The new tab is selected");
++  is(
++    TabStacks.stackTabs(parent).at(-1),
++    newTab,
++    "The new tab is appended to the stack"
++  );
++
++  BrowserTestUtils.removeTab(newTab);
++  BrowserTestUtils.removeTab(child);
++  BrowserTestUtils.removeTab(parent);
++});
++
++add_task(async function test_stack_bar_hides_outside_active_stack() {
++  let parent = BrowserTestUtils.addTab(gBrowser, "about:blank", {
++    skipAnimation: true,
++  });
++  let child = BrowserTestUtils.addTab(gBrowser, "about:config", {
++    skipAnimation: true,
++  });
++  let regularTab = BrowserTestUtils.addTab(gBrowser, "about:robots", {
++    skipAnimation: true,
++  });
++  let originalOrientation = gBrowser.tabContainer.getAttribute("orient");
++  let bar = document.getElementById("tab-stack-bars");
++
++  try {
++    gBrowser.tabContainer.setAttribute("orient", "horizontal");
++    TabStacks.stack(child, parent);
++    gBrowser.selectedTab = parent;
++    await TestUtils.waitForCondition(
++      () => !bar.hidden,
++      "The active stack's tab bar is shown"
++    );
++
++    // A pending mouse/drag state must not keep the previous stack bar visible.
++    TabStacks._isDraggingTab = true;
++    TabStacks._mouseDownOnTab = true;
++    gBrowser.selectedTab = regularTab;
++    TabStacks.renderStackBars();
++    Assert.ok(bar.hidden, "The stack bar hides when a regular tab is selected");
++  } finally {
++    TabStacks._isDraggingTab = false;
++    TabStacks._mouseDownOnTab = false;
++    if (originalOrientation) {
++      gBrowser.tabContainer.setAttribute("orient", originalOrientation);
++    } else {
++      gBrowser.tabContainer.removeAttribute("orient");
++    }
++  }
++
++  BrowserTestUtils.removeTab(regularTab);
++  BrowserTestUtils.removeTab(child);
++  BrowserTestUtils.removeTab(parent);
++});
++
++add_task(async function test_stack_remembers_its_last_selected_tab() {
++  let firstParent = BrowserTestUtils.addTab(gBrowser, "about:blank");
++  let firstChild = BrowserTestUtils.addTab(gBrowser, "about:config");
++  let secondParent = BrowserTestUtils.addTab(gBrowser, "about:robots");
++  let secondChild = BrowserTestUtils.addTab(gBrowser, "about:mozilla");
++  let regularTab = BrowserTestUtils.addTab(gBrowser, "about:license");
++
++  TabStacks.stack(firstChild, firstParent);
++  TabStacks.stack(secondChild, secondParent);
++  gBrowser.selectedTab = firstChild;
++
++  gBrowser.selectedTab = secondParent;
++  Assert.ok(
++    firstChild.hasAttribute("stack-current"),
++    "Switching stacks keeps the last selected tab as the first stack's parent"
++  );
++
++  gBrowser.selectedTab = regularTab;
++  Assert.ok(
++    firstChild.hasAttribute("stack-current"),
++    "Switching to a regular tab keeps the last selected stack tab as parent"
++  );
++
++  gBrowser.selectedTab = firstChild;
++  Assert.equal(
++    gBrowser.selectedTab,
++    firstChild,
++    "Returning to the stack selects the tab that was last active in it"
++  );
++
++  BrowserTestUtils.removeTab(regularTab);
++  BrowserTestUtils.removeTab(secondChild);
++  BrowserTestUtils.removeTab(secondParent);
++  BrowserTestUtils.removeTab(firstChild);
++  BrowserTestUtils.removeTab(firstParent);
++});
++
++add_task(async function test_only_related_tabs_join_active_stack() {
++  let pageURL = getRootDirectory(gTestPath).replace(
++    "chrome://mochitests/content",
++    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
++    "http://example.com"
++  );
++  pageURL += "file_new_tab_page.html";
++
++  let parent = await BrowserTestUtils.openNewForegroundTab(gBrowser, pageURL);
++  let child = BrowserTestUtils.addTab(gBrowser, "about:config");
++  TabStacks.stack(child, parent);
++  let originalOrientation = gBrowser.tabContainer.getAttribute("orient");
++
++  try {
++    gBrowser.tabContainer.setAttribute("orient", "horizontal");
++    gBrowser.selectedTab = parent;
++
++    let newTabPromise = BrowserTestUtils
++      .waitForEvent(gBrowser.tabContainer, "TabOpen")
++      .then(event => event.target);
++    BrowserCommands.openTab();
++    let newTab = await newTabPromise;
++    is(newTab.openerTab, null, "The new-tab button has no source tab");
++    ok(!TabStacks.stackId(newTab), "The new-tab button opens outside a stack");
++    BrowserTestUtils.removeTab(newTab);
++
++    for (let click of [{ ctrlKey: true }, { button: 1 }]) {
++      gBrowser.selectedTab = parent;
++      let relatedTabPromise = BrowserTestUtils.waitForNewTab(
++        gBrowser,
++        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
++        "http://example.com/#linkclick",
++        true
++      );
++      await BrowserTestUtils.synthesizeMouseAtCenter(
++        "#link_to_example_com",
++        click,
++        parent.linkedBrowser
++      );
++      let relatedTab = await relatedTabPromise;
++      is(relatedTab.openerTab, parent, "The link keeps its source tab");
++      is(
++        TabStacks.stackId(relatedTab),
++        TabStacks.stackId(parent),
++        "A Ctrl-clicked or middle-clicked link joins the horizontal stack"
++      );
++      BrowserTestUtils.removeTab(relatedTab);
++    }
++  } finally {
++    if (originalOrientation) {
++      gBrowser.tabContainer.setAttribute("orient", originalOrientation);
++    } else {
++      gBrowser.tabContainer.removeAttribute("orient");
++    }
++  }
++
++  BrowserTestUtils.removeTab(child);
++  BrowserTestUtils.removeTab(parent);
++});
++
++add_task(async function test_script_opened_tabs_join_source_stack() {
++  let parent = await BrowserTestUtils.openNewForegroundTab(
++    gBrowser,
++    "data:text/html," +
++      [
++        '<a id="scripted-link" href="about:blank"',
++        'onclick="event.preventDefault(); window.open(\'about:blank\', \'_blank\');">',
++        "Open</a>",
++      ].join(" ")
++  );
++  let child = BrowserTestUtils.addTab(gBrowser, "about:config");
++  TabStacks.stack(child, parent);
++
++  try {
++    gBrowser.selectedTab = parent;
++    let newTabPromise = BrowserTestUtils.waitForNewTab(
++      gBrowser,
++      "about:blank",
++      true
++    );
++    await BrowserTestUtils.synthesizeMouseAtCenter(
++      "#scripted-link",
++      { ctrlKey: true },
++      parent.linkedBrowser
++    );
++    let newTab = await newTabPromise;
++
++    is(newTab.openerTab, parent, "The scripted tab keeps its source tab");
++    is(
++      TabStacks.stackId(newTab),
++      TabStacks.stackId(parent),
++      "A scripted Ctrl-clicked link joins its source stack"
++    );
++    BrowserTestUtils.removeTab(newTab);
++  } finally {
++    BrowserTestUtils.removeTab(child);
++    BrowserTestUtils.removeTab(parent);
++  }
++});
++
++add_task(async function test_drag_tab_from_regular_tabbar_into_stack_tabbar() {
++  let parent = BrowserTestUtils.addTab(gBrowser, "about:blank", {
++    skipAnimation: true,
++  });
++  let child = BrowserTestUtils.addTab(gBrowser, "about:config", {
++    skipAnimation: true,
++  });
++  TabStacks.stack(child, parent);
++
++  let originalOrientation = gBrowser.tabContainer.getAttribute("orient");
++  gBrowser.tabContainer.setAttribute("orient", "horizontal");
++  gBrowser.selectedTab = parent;
++
++  let bar = document.getElementById("tab-stack-bars");
++  let container = document.getElementById("tab-stack-bars-container");
++  await TestUtils.waitForCondition(
++    () =>
++      !bar.hidden && container.querySelectorAll(".tab-stack-tab").length == 2,
++    "The active stack's tabs are shown in a stack bar"
++  );
++
++  let externalTab = null;
++  let externalTab2 = null;
++  let externalTab3 = null;
++  let pinnedTab = null;
++
++  externalTab = BrowserTestUtils.addTab(gBrowser, "about:robots", {
++    skipAnimation: true,
++  });
++  ok(!TabStacks.stackId(externalTab), "externalTab is initially not in a stack");
++
++  try {
++    // 1. Drop after a button in the stack bar
++    let buttons = container.querySelectorAll(".tab-stack-tab");
++    let targetButton = buttons[1]; // child button
++    let rect = targetButton.getBoundingClientRect();
++    EventUtils.synthesizeDrop(
++      externalTab,
++      targetButton,
++      [[{ type: "application/x-moz-tabbrowser-tab", data: externalTab }]],
++      "move",
++      window,
++      window,
++      {
++        clientX: rect.left + rect.width * 0.75,
++        clientY: rect.top + rect.height / 2,
++      }
++    );
++
++    await TestUtils.waitForCondition(
++      () =>
++        TabStacks.stackId(externalTab) == TabStacks.stackId(parent) &&
++        container.querySelectorAll(".tab-stack-tab").length == 3,
++      "externalTab joined the stack and is displayed in the stack bar"
++    );
++
++    Assert.deepEqual(
++      TabStacks.stackTabs(parent),
++      [parent, child, externalTab],
++      "externalTab was inserted after the child tab"
++    );
++
++    // 2. Drop before the first button (becomes the new parent)
++    externalTab2 = BrowserTestUtils.addTab(gBrowser, "about:mozilla", {
++      skipAnimation: true,
++    });
++    let firstButton = container.querySelectorAll(".tab-stack-tab")[0];
++    let rectFirst = firstButton.getBoundingClientRect();
++    EventUtils.synthesizeDrop(
++      externalTab2,
++      firstButton,
++      [[{ type: "application/x-moz-tabbrowser-tab", data: externalTab2 }]],
++      "move",
++      window,
++      window,
++      {
++        clientX: rectFirst.left + rectFirst.width * 0.25,
++        clientY: rectFirst.top + rectFirst.height / 2,
++      }
++    );
++
++    await TestUtils.waitForCondition(
++      () =>
++        TabStacks.stackId(externalTab2) == TabStacks.stackId(parent) &&
++        container.querySelectorAll(".tab-stack-tab").length == 4,
++      "externalTab2 joined the stack at the beginning"
++    );
++
++    Assert.equal(
++      TabStacks.stackTabs(parent)[0],
++      externalTab2,
++      "externalTab2 is now the first tab of the stack"
++    );
++    Assert.ok(
++      externalTab2.hasAttribute("stack-current"),
++      "externalTab2 is marked as stack current tab"
++    );
++
++    // 3. Drop onto empty area of stack bar row (appends to end)
++    externalTab3 = BrowserTestUtils.addTab(gBrowser, "about:license", {
++      skipAnimation: true,
++    });
++    let row = container.querySelector(".tab-stack-bar-row");
++    let rowRect = row.getBoundingClientRect();
++    EventUtils.synthesizeDrop(
++      externalTab3,
++      row,
++      [[{ type: "application/x-moz-tabbrowser-tab", data: externalTab3 }]],
++      "move",
++      window,
++      window,
++      {
++        clientX: rowRect.right - 5,
++        clientY: rowRect.top + rowRect.height / 2,
++      }
++    );
++
++    await TestUtils.waitForCondition(
++      () =>
++        TabStacks.stackId(externalTab3) == TabStacks.stackId(parent) &&
++        container.querySelectorAll(".tab-stack-tab").length == 5,
++      "externalTab3 joined the stack at the end via row drop"
++    );
++
++    Assert.equal(
++      TabStacks.stackTabs(parent).at(-1),
++      externalTab3,
++      "externalTab3 was appended to the end of the stack"
++    );
++
++    // 4. Dropping a pinned tab is rejected
++    pinnedTab = BrowserTestUtils.addTab(gBrowser, "about:config", {
++      skipAnimation: true,
++    });
++    gBrowser.pinTab(pinnedTab);
++    let newRow = container.querySelector(".tab-stack-bar-row");
++    let newRowRect = newRow.getBoundingClientRect();
++    EventUtils.synthesizeDrop(
++      pinnedTab,
++      newRow,
++      [[{ type: "application/x-moz-tabbrowser-tab", data: pinnedTab }]],
++      "move",
++      window,
++      window,
++      {
++        clientX: newRowRect.right - 5,
++        clientY: newRowRect.top + newRowRect.height / 2,
++      }
++    );
++
++    Assert.ok(!TabStacks.stackId(pinnedTab), "Pinned tab was not added to stack");
++    Assert.equal(
++      container.querySelectorAll(".tab-stack-tab").length,
++      5,
++      "Stack count remained unchanged after pinned tab drop attempt"
++    );
++  } finally {
++    TabStacks._isDraggingTab = false;
++    TabStacks._mouseDownOnTab = false;
++    TabStacks._draggedStackTab = null;
++    TabStacks._draggedExternalTab = null;
++    if (pinnedTab) {
++      BrowserTestUtils.removeTab(pinnedTab);
++    }
++    if (externalTab3) {
++      BrowserTestUtils.removeTab(externalTab3);
++    }
++    if (externalTab2) {
++      BrowserTestUtils.removeTab(externalTab2);
++    }
++    if (externalTab) {
++      BrowserTestUtils.removeTab(externalTab);
++    }
++    if (originalOrientation) {
++      gBrowser.tabContainer.setAttribute("orient", originalOrientation);
++    } else {
++      gBrowser.tabContainer.removeAttribute("orient");
++    }
++  }
++
++  BrowserTestUtils.removeTab(child);
++  BrowserTestUtils.removeTab(parent);
++});
++
++add_task(async function test_drag_tab_from_stack_tabbar_to_regular_tabbar() {
++  let parent = BrowserTestUtils.addTab(gBrowser, "about:blank", {
++    skipAnimation: true,
++  });
++  let child1 = BrowserTestUtils.addTab(gBrowser, "about:config", {
++    skipAnimation: true,
++  });
++  let child2 = BrowserTestUtils.addTab(gBrowser, "about:robots", {
++    skipAnimation: true,
++  });
++  TabStacks.stack(child1, parent);
++  TabStacks.stack(child2, child1);
++
++  let originalOrientation = gBrowser.tabContainer.getAttribute("orient");
++  gBrowser.tabContainer.setAttribute("orient", "horizontal");
++  gBrowser.selectedTab = parent;
++
++  let bar = document.getElementById("tab-stack-bars");
++  let container = document.getElementById("tab-stack-bars-container");
++  await TestUtils.waitForCondition(
++    () =>
++      !bar.hidden && container.querySelectorAll(".tab-stack-tab").length == 3,
++    "The stack bar is shown with 3 tabs"
++  );
++
++  try {
++    // 1. Drag child1 from the stack bar into the regular tab bar (after parent)
++    let buttons = container.querySelectorAll(".tab-stack-tab");
++    let child1Button = buttons[1];
++    let parentRect = parent.getBoundingClientRect();
++
++    TabStacks._draggedStackTab = child1;
++    EventUtils.synthesizeDrop(
++      child1Button,
++      parent,
++      [[{ type: "application/x-moz-tabbrowser-tab", data: child1 }]],
++      "move",
++      window,
++      window,
++      {
++        clientX: parentRect.right + 5,
++        clientY: parentRect.top + parentRect.height / 2,
++      }
++    );
++
++    await TestUtils.waitForCondition(
++      () =>
++        !TabStacks.stackId(child1) &&
++        container.querySelectorAll(".tab-stack-tab").length == 2,
++      "child1 was unstacked and removed from the stack bar"
++    );
++
++    Assert.ok(!TabStacks.stackId(child1), "child1 has no stack ID");
++    Assert.notEqual(
++      getComputedStyle(child1).display,
++      "none",
++      "child1 is now visible in the regular tab bar"
++    );
++    Assert.deepEqual(
++      TabStacks.stackTabs(parent),
++      [parent, child2],
++      "Remaining stack tabs are parent and child2"
++    );
++
++    // 2. Drag parent from the stack bar into the regular tab bar
++    // Since only child2 remains, the whole stack dissolves
++    buttons = container.querySelectorAll(".tab-stack-tab");
++    let parentButton = buttons[0];
++    let child1Rect = child1.getBoundingClientRect();
++
++    TabStacks._draggedStackTab = parent;
++    EventUtils.synthesizeDrop(
++      parentButton,
++      child1,
++      [[{ type: "application/x-moz-tabbrowser-tab", data: parent }]],
++      "move",
++      window,
++      window,
++      {
++        clientX: child1Rect.right + 5,
++        clientY: child1Rect.top + child1Rect.height / 2,
++      }
++    );
++
++    await TestUtils.waitForCondition(
++      () => bar.hidden && !TabStacks.stackId(parent) && !TabStacks.stackId(child2),
++      "Stack dissolved completely after moving parent tab outside stack"
++    );
++
++    Assert.ok(!TabStacks.stackId(parent), "parent is unstacked");
++    Assert.ok(!TabStacks.stackId(child2), "child2 is unstacked");
++    Assert.ok(bar.hidden, "The stack bar is now hidden");
++  } finally {
++    TabStacks._isDraggingTab = false;
++    TabStacks._mouseDownOnTab = false;
++    TabStacks._draggedStackTab = null;
++    TabStacks._draggedExternalTab = null;
++    if (originalOrientation) {
++      gBrowser.tabContainer.setAttribute("orient", originalOrientation);
++    } else {
++      gBrowser.tabContainer.removeAttribute("orient");
++    }
++  }
++
++  BrowserTestUtils.removeTab(child2);
++  BrowserTestUtils.removeTab(child1);
++  BrowserTestUtils.removeTab(parent);
++});
++
++add_task(async function test_drag_stack_in_regular_tabbar() {
++  let first = BrowserTestUtils.addTab(gBrowser, "about:blank", {
++    skipAnimation: true,
++  });
++  let firstChild = BrowserTestUtils.addTab(gBrowser, "about:config", {
++    skipAnimation: true,
++  });
++  let second = BrowserTestUtils.addTab(gBrowser, "about:robots", {
++    skipAnimation: true,
++  });
++  let secondChild = BrowserTestUtils.addTab(gBrowser, "about:mozilla", {
++    skipAnimation: true,
++  });
++  let regular = BrowserTestUtils.addTab(gBrowser, "about:license", {
++    skipAnimation: true,
++  });
++  let originalOrientation = gBrowser.tabContainer.getAttribute("orient");
++
++  try {
++    gBrowser.tabContainer.setAttribute("orient", "horizontal");
++    TabStacks.stack(firstChild, first);
++    TabStacks.stack(secondChild, second);
++    TabStacks._draggedExternalTab = first;
++
++    let rect = second.getBoundingClientRect();
++    TabStacks._onTabStripDrop({
++      dataTransfer: { dropEffect: "move" },
++      target: second,
++      clientX: rect.right,
++      clientY: rect.top + rect.height / 2,
++      preventDefault() {},
++      stopPropagation() {},
++    });
++
++    Assert.deepEqual(
++      [first, firstChild, second, secondChild].sort((a, b) => a._tPos - b._tPos),
++      [second, secondChild, first, firstChild],
++      "Dragging a stack in the main tab bar moves all of its tabs after the target stack"
++    );
++    Assert.equal(
++      TabStacks.stackId(first),
++      TabStacks.stackId(firstChild),
++      "The moved tabs remain in their stack"
++    );
++
++    TabStacks._draggedExternalTab = regular;
++    rect = second.getBoundingClientRect();
++    TabStacks._onTabStripDrop({
++      dataTransfer: { dropEffect: "move" },
++      target: second,
++      clientX: rect.right,
++      clientY: rect.top + rect.height / 2,
++      preventDefault() {},
++      stopPropagation() {},
++    });
++
++    Assert.deepEqual(
++      [first, firstChild, second, secondChild, regular].sort(
++        (a, b) => a._tPos - b._tPos
++      ),
++      [second, secondChild, regular, first, firstChild],
++      "A tab dropped beside a stack is placed beside the whole stack"
++    );
++  } finally {
++    TabStacks._draggedExternalTab = null;
++    if (originalOrientation) {
++      gBrowser.tabContainer.setAttribute("orient", originalOrientation);
++    } else {
++      gBrowser.tabContainer.removeAttribute("orient");
++    }
++    BrowserTestUtils.removeTab(regular);
++    BrowserTestUtils.removeTab(secondChild);
++    BrowserTestUtils.removeTab(second);
++    BrowserTestUtils.removeTab(firstChild);
++    BrowserTestUtils.removeTab(first);
++  }
++});
+diff --git a/firefox/browser/modules/test/unit/test_TabUnloader.js b/firefox/browser/modules/test/unit/test_TabUnloader.js
+index 20527b6735..7d61f9c7d2 100644
+--- a/firefox/browser/modules/test/unit/test_TabUnloader.js
++++ b/firefox/browser/modules/test/unit/test_TabUnloader.js
+@@ -407,6 +407,8 @@ let unloadTests = [
+ ];
+ 
+ let globalBrowser = {
++  async prepareDiscardBrowser() {},
++
+   discardBrowser() {
+     return true;
+   },
+@@ -447,3 +449,38 @@ add_task(async function doTests() {
+     Assert.equal(expectedOrder, test.result);
+   }
+ });
++
++add_task(async function unloads_all_inactive_tabs_but_not_media_tabs() {
++  let discardedTabs = [];
++  let tabs = ["1", "2 media", "3", "4 selected"];
++
++  TestTabUnloaderMethods.iterateTabs = function* () {
++    for (let originalIndex = 0; originalIndex < tabs.length; originalIndex++) {
++      let tab = {
++        originalIndex,
++        lastAccessed: Number(/^[0-9]+/.exec(tabs[originalIndex])[0]),
++        keywords: tabs[originalIndex],
++        process: "1",
++        updateLastUnloadedByTabUnloader() {},
++      };
++      yield {
++        tab,
++        gBrowser: {
++          async prepareDiscardBrowser() {},
++          discardBrowser() {
++            discardedTabs.push(originalIndex);
++            return true;
++          },
++        },
++      };
++    }
++  };
++
++  let unloadedTabs = await TabUnloader.unloadTabsInactiveFor(
++    0,
++    TestTabUnloaderMethods
++  );
++
++  Assert.equal(unloadedTabs, 2, "all eligible inactive tabs were unloaded");
++  Assert.deepEqual(discardedTabs, [0, 2], "media and selected tabs were kept");
++});
+diff --git a/firefox/browser/moz.configure b/firefox/browser/moz.configure
+index e8b401a7df..6195fbd061 100644
+--- a/firefox/browser/moz.configure
++++ b/firefox/browser/moz.configure
+@@ -13,8 +13,11 @@ imply_option("MOZ_NORMANDY", True)
+ imply_option("MOZ_PROFILE_MIGRATOR", True)
+ 
+ 
+-imply_option("MOZ_APP_VENDOR", "Mozilla")
+-imply_option("MOZ_APP_ID", "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}")
++imply_option("MOZ_APP_BASENAME", "simple")
++imply_option("MOZ_APP_VENDOR", "simple")
++imply_option("MOZ_APP_ID", "{5a5e15ae-ed2f-41d9-9778-776bb1ce8820}")
++imply_option("MOZ_APP_PROFILE", "simple")
++imply_option("MOZ_APP_REMOTINGNAME", "simple")
+ # Include the DevTools client, not just the server (which is the default)
+ imply_option("MOZ_DEVTOOLS", "all")
+ imply_option("BROWSER_CHROME_URL", "chrome://browser/content/browser.xhtml")
+diff --git a/firefox/browser/themes/shared/browser-shared.css b/firefox/browser/themes/shared/browser-shared.css
+index dd5946c1d5..d92cda3069 100644
+--- a/firefox/browser/themes/shared/browser-shared.css
++++ b/firefox/browser/themes/shared/browser-shared.css
+@@ -3,6 +3,7 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ @import url("chrome://browser/skin/browser-colors.css");
++@import url("chrome://browser/skin/userChrome.css");
+ @import url("chrome://browser/skin/addons/extension-controlled.css");
+ @import url("chrome://browser/skin/addons/unified-extensions.css");
+ @import url("chrome://browser/skin/downloads/indicator.css");
+diff --git a/firefox/browser/themes/shared/jar.inc.mn b/firefox/browser/themes/shared/jar.inc.mn
+index 913bf4fec2..a5efacbe58 100644
+--- a/firefox/browser/themes/shared/jar.inc.mn
++++ b/firefox/browser/themes/shared/jar.inc.mn
+@@ -18,6 +18,13 @@
+   skin/classic/browser/blockedSite.css                         (../shared/blockedSite.css)
+   skin/classic/browser/browser-colors.css                      (../shared/browser-colors.css)
+   skin/classic/browser/browser-shared.css                      (../shared/browser-shared.css)
++  skin/classic/browser/userChrome.css                          (../shared/userChrome.css)
++  skin/classic/browser/theme/variables.css                     (../shared/theme/variables.css)
++  skin/classic/browser/theme/layout.css                        (../shared/theme/layout.css)
++  skin/classic/browser/theme/floating-urlbar.css              (../shared/theme/floating-urlbar.css)
++  skin/classic/browser/theme/viewport-canvas.css               (../shared/theme/viewport-canvas.css)
++  skin/classic/browser/theme/tabbar.css                        (../shared/theme/tabbar.css)
++  skin/classic/browser/theme/transparent-toolbar.css           (../shared/theme/transparent-toolbar.css)
+   skin/classic/browser/formautofill-notification.css           (../shared/formautofill-notification.css)
+   skin/classic/browser/identity-credential-notification.css    (../shared/identity-credential-notification.css)
+   skin/classic/browser/menupanel.css                           (../shared/menupanel.css)
+diff --git a/firefox/browser/themes/shared/preferences/preferences.css b/firefox/browser/themes/shared/preferences/preferences.css
+index c44551ac2c..3591537cad 100644
+--- a/firefox/browser/themes/shared/preferences/preferences.css
++++ b/firefox/browser/themes/shared/preferences/preferences.css
+@@ -239,7 +239,156 @@ radio {
+   list-style-image: url("chrome://browser/skin/preferences/mozilla-logo.svg");
+ }
+ 
+-/* All panes */
++/* Section headers in category list */
++
++.category-header {
++  min-height: 28px !important;
++  padding-block: 8px 2px !important;
++  padding-inline-start: 12px !important;
++  cursor: default !important;
++  opacity: 1 !important;
++  pointer-events: none !important;
++  user-select: none !important;
++}
++
++.category-header:first-child {
++  padding-top: 2px !important;
++}
++
++.category-header:hover,
++.category-header[selected] {
++  background-color: transparent !important;
++  color: inherit !important;
++}
++
++.category-header-label {
++  font-size: 0.75em !important;
++  font-weight: 700 !important;
++  text-transform: uppercase !important;
++  letter-spacing: 0.05em !important;
++  color: var(--text-color-deemphasized) !important;
++  margin: 0 !important;
++}
++
++.category-header > .category-icon {
++  display: none !important;
++}
++
++/* Simple category icons */
++
++#category-simple-appearance > .category-icon {
++  list-style-image: url("chrome://global/skin/icons/settings.svg");
++}
++
++#category-simple-tab-management > .category-icon {
++  list-style-image: url("chrome://browser/skin/tab.svg");
++}
++
++#simpleTabListGroup {
++  margin-top: 24px;
++}
++
++.simple-tab-list {
++  gap: 2px;
++  margin-top: 8px;
++}
++
++.simple-tab-stack-toggle,
++.simple-tab-section-label {
++  color: var(--text-color-deemphasized);
++  font-size: 0.9em;
++  margin-top: 12px;
++}
++
++.simple-tab-stack-toggle:first-child {
++  margin-top: 0;
++}
++
++.simple-tab-stack-toggle {
++  align-items: center;
++  appearance: none;
++  background: transparent;
++  border: 0;
++  border-radius: 4px;
++  color: inherit;
++  cursor: pointer;
++  display: flex;
++  font: inherit;
++  margin-inline-start: -4px;
++  min-height: 0;
++  min-width: 0;
++  padding: 4px;
++  text-align: start;
++}
++
++.simple-tab-stack-toggle:hover {
++  background: transparent;
++  text-decoration: underline;
++}
++
++.simple-tab-stack-toggle:focus-visible {
++  outline: 2px solid var(--focus-outline-color);
++  outline-offset: 1px;
++}
++
++.simple-tab-stack-chevron {
++  color: var(--text-color-deemphasized);
++  display: inline-block;
++  margin-inline-end: 6px;
++  width: 10px;
++}
++
++.simple-tab-stack-name {
++  color: var(--text-color);
++  font-weight: var(--font-weight-bold);
++}
++
++.simple-tab-stack-count {
++  color: var(--text-color-deemphasized);
++  margin-inline-start: 8px;
++}
++
++.simple-tab-section-label {
++  font-weight: var(--font-weight-bold);
++}
++
++.simple-tab-row {
++  border-radius: 4px;
++  min-height: 34px;
++  padding: 2px 6px;
++}
++
++.simple-tab-row[data-in-stack] {
++  padding-inline-start: 22px;
++}
++
++.simple-tab-row:hover {
++  background: var(--in-content-item-hover);
++}
++
++.simple-tab-icon {
++  height: 16px;
++  margin-inline-end: 8px;
++  width: 16px;
++}
++
++.simple-tab-state {
++  color: var(--text-color-deemphasized);
++  font-size: 0.85em;
++  margin-inline: 10px;
++  min-width: 72px;
++}
++
++.simple-tab-row[data-hibernated] .simple-tab-title,
++.simple-tab-row[data-hibernated] .simple-tab-state {
++  color: var(--text-color-deemphasized);
++  opacity: 0.68;
++}
++
++.simple-tab-action {
++  margin: 0;
++  min-width: 88px;
++}
+ 
+ .info-icon,
+ .androidIcon,
+diff --git a/firefox/mozglue/static/rust/flag_check.exe b/firefox/mozglue/static/rust/flag_check.exe
+index a1bce3f97f..c5b8fec71b 100644
+Binary files a/firefox/mozglue/static/rust/flag_check.exe and b/firefox/mozglue/static/rust/flag_check.exe differ
+diff --git a/firefox/mozglue/static/rust/flag_check.ilk b/firefox/mozglue/static/rust/flag_check.ilk
+index e0630a9d15..4029d3e953 100644
+Binary files a/firefox/mozglue/static/rust/flag_check.ilk and b/firefox/mozglue/static/rust/flag_check.ilk differ
+diff --git a/firefox/testing/mozbase/mozprofile/mozprofile/__pycache__/permissions.cpython-313.pyc.1190766867152 b/firefox/testing/mozbase/mozprofile/mozprofile/__pycache__/permissions.cpython-313.pyc.1190766867152
+deleted file mode 100644
+index e69de29bb2..0000000000
